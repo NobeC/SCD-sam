@@ -185,9 +185,9 @@ def main():
     loader_gen = torch.Generator().manual_seed(opt.seed)
     loader = DataLoader(train, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers,
                         pin_memory=True, worker_init_fn=seed_worker, generator=loader_gen,
-                        persistent_workers=False)
+                        persistent_workers=opt.workers > 0)
     validation = DataLoader(val, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers,
-                            pin_memory=True, persistent_workers=False)
+                            pin_memory=True, persistent_workers=opt.workers > 0)
     from main_model import ChangeDetection
     from types import SimpleNamespace
     model = ChangeDetection(SimpleNamespace(backbone="msam_96", neck="fpn+drop", head="fcn",
