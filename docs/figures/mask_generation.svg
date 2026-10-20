@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">掩码生成模块示意图</title>
+  <desc id="desc">双时相遥感影像经过特征提取、差异响应、候选变化区域生成、超像素聚合和形态学清理得到变化掩码。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#34495e"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#1f2d3d" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg{fill:#f7fafc}
+      .panel{fill:#fff;stroke:#d7e0ea;stroke-width:2;filter:url(#shadow)}
+      .title{font:700 36px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .label{font:700 24px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .small{font:500 20px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#334155}
+      .note{font:500 16px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#607089}
+      .arrow{stroke:#34495e;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect class="bg" width="1280" height="760"/>
+  <text class="title" x="52" y="66">掩码生成模块：由双时相影像得到候选变化区域</text>
+
+  <rect class="panel" x="54" y="116" width="230" height="246" rx="8"/>
+  <text class="label" x="84" y="154">双时相输入</text>
+  <g transform="translate(94 188)">
+    <rect x="0" y="0" width="116" height="78" fill="#dbeafe" stroke="#7aaee8" stroke-width="2"/>
+    <path d="M0 58 L28 34 L48 50 L72 22 L116 61 L116 78 L0 78 Z" fill="#7ccf9b"/>
+    <rect x="14" y="16" width="28" height="20" fill="#fbbf24"/>
+    <text class="note" x="58" y="106" text-anchor="middle">T1 影像 A</text>
+  </g>
+  <g transform="translate(124 240)">
+    <rect x="0" y="0" width="116" height="78" fill="#dbeafe" stroke="#7aaee8" stroke-width="2"/>
+    <path d="M0 58 L28 34 L48 50 L72 22 L116 61 L116 78 L0 78 Z" fill="#7ccf9b"/>
+    <rect x="68" y="14" width="32" height="26" fill="#ef4444"/>
+    <text class="note" x="58" y="106" text-anchor="middle">T2 影像 B</text>
+  </g>
+
+  <path class="arrow" d="M286 239 C318 239 336 239 366 239"/>
+
+  <rect class="panel" x="370" y="116" width="230" height="246" rx="8"/>
+  <text class="label" x="400" y="154">特征提取</text>
+  <text class="small" x="400" y="194">Backbone / SAMNet</text>
+  <g transform="translate(416 226)">
+    <rect x="0" y="0" width="120" height="28" rx="6" fill="#cfe8ff" stroke="#7aaee8"/>
+    <rect x="16" y="34" width="120" height="28" rx="6" fill="#bfe6d0" stroke="#55a873"/>
+    <rect x="32" y="68" width="120" height="28" rx="6" fill="#ffe1a8" stroke="#d69a22"/>
+    <text class="note" x="76" y="132" text-anchor="middle">F_A, F_B</text>
+  </g>
+
+  <path class="arrow" d="M602 239 C634 239 652 239 682 239"/>
+
+  <rect class="panel" x="686" y="116" width="242" height="246" rx="8"/>
+  <text class="label" x="716" y="154">差异响应</text>
+  <text class="small" x="716" y="194">|F_A - F_B| / logits</text>
+  <g transform="translate(734 224)">
+    <rect x="0" y="0" width="140" height="104" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+    <circle cx="34" cy="32" r="18" fill="#fee2e2"/>
+    <circle cx="92" cy="54" r="30" fill="#fca5a5"/>
+    <circle cx="52" cy="78" r="14" fill="#fecaca"/>
+    <text class="note" x="70" y="132" text-anchor="middle">变化热力图 M_raw</text>
+  </g>
+
+  <path class="arrow" d="M930 239 C962 239 980 239 1010 239"/>
+
+  <rect class="panel" x="1014" y="116" width="220" height="246" rx="8"/>
+  <text class="label" x="1044" y="154">候选掩码</text>
+  <text class="small" x="1044" y="194">阈值 + 置信度</text>
+  <g transform="translate(1060 224)">
+    <rect x="0" y="0" width="128" height="104" fill="#0f172a" stroke="#94a3b8" stroke-width="2"/>
+    <path d="M68 18 C104 20 112 51 96 76 C77 105 33 87 38 52 C41 31 50 20 68 18 Z" fill="#f8fafc"/>
+    <text class="note" x="64" y="132" text-anchor="middle">M_candidate</text>
+  </g>
+
+  <path class="arrow" d="M1124 364 C1124 402 1090 422 1038 438"/>
+  <rect class="panel" x="732" y="438" width="506" height="210" rx="8"/>
+  <text class="label" x="762" y="480">超像素聚合与清理</text>
+  <text class="small" x="762" y="524">1. 同一超像素内投票 / 平均响应</text>
+  <text class="small" x="762" y="564">2. 去除小区域、填补孔洞、平滑边界</text>
+  <text class="small" x="762" y="604">3. 得到训练可用的变化区域 mask</text>
+  <g transform="translate(1074 484)">
+    <rect x="0" y="0" width="104" height="104" fill="#0f172a" stroke="#94a3b8" stroke-width="2"/>
+    <path d="M58 15 C90 18 94 48 84 72 C67 98 30 83 33 51 C36 29 43 17 58 15 Z" fill="#38bdf8"/>
+    <path d="M58 15 C90 18 94 48 84 72 C67 98 30 83 33 51 C36 29 43 17 58 15 Z" fill="none" stroke="#fff" stroke-width="3"/>
+  </g>
+
+  <rect class="panel" x="54" y="438" width="556" height="210" rx="8"/>
+  <text class="label" x="84" y="480">输出用途</text>
+  <text class="small" x="84" y="524">掩码用于限制伪标签区域、超像素节点采样和可视化检查</text>
+  <text class="small" x="84" y="568">保留高置信变化区域，降低噪声像素对训练的影响</text>
+  <path class="arrow" d="M610 544 C650 544 680 544 728 544"/>
+</svg>

@@ -1,0 +1,34 @@
+{
+  "created_utc": "2026-10-15T12:36:45.529916+00:00",
+  "gpu_physical": 2,
+  "cwd": "/home/homenew/yang/SCD/SCD-SAM/SCD",
+  "source": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/code_fullgraph_stage2_20261015/train_hiucd_stage2.py",
+  "source_sha256": "c3203e166690fdb0d25072dae411a70158d726e234d5ca9babed1d043d88f518",
+  "split_sha256": "5b1ea8b080cb680aee158cb002c3695380d0f2c3e7ced3311d92881c925db558",
+  "config": {
+    "epochs": 100,
+    "seed": 42,
+    "batch_size": 2,
+    "effective_batch_size": 8,
+    "workers": 4,
+    "lr": 0.00035,
+    "graph_all_cached_nodes": true,
+    "graph_max_regions": 0,
+    "stage1_gt_node_weight": 0.1,
+    "stage1_gt_edge_weight": 0.1,
+    "stage2_enabled": true,
+    "stage2_start_epoch": 55,
+    "lambda_sem_u": 0.5,
+    "pseudo_alpha": [
+      0.5,
+      0.8
+    ],
+    "pseudo_start_epoch": 30,
+    "pseudo_ramp_epochs": 5,
+    "graph_pixel_weight": 0.05,
+    "graph_pixel_ramp_epochs": 10,
+    "ema_decay": 0.999,
+    "amp": true
+  },
+  "command_file": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/command_fullgraph_stage2_20261015.txt"
+}

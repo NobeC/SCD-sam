@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">伪标签生成模块示意图</title>
+  <desc id="desc">EMA teacher、原型提示和 GCN 修正共同生成高置信伪标签，并用于监督 student backbone。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#34495e"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#1f2d3d" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg{fill:#f7fafc}
+      .panel{fill:#fff;stroke:#d7e0ea;stroke-width:2;filter:url(#shadow)}
+      .title{font:700 36px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .label{font:700 24px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .small{font:500 20px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#334155}
+      .note{font:500 16px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#607089}
+      .arrow{stroke:#34495e;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .dash{stroke-dasharray:9 8}
+      .node{stroke:#fff;stroke-width:4}
+    </style>
+  </defs>
+  <rect class="bg" width="1280" height="760"/>
+  <text class="title" x="52" y="66">伪标签模块：Teacher 预测 + Prototype/GCN 修正 + Student 监督</text>
+
+  <rect class="panel" x="54" y="112" width="258" height="226" rx="8"/>
+  <text class="label" x="84" y="152">未标记样本</text>
+  <text class="small" x="84" y="194">x_u = (A_u, B_u)</text>
+  <g transform="translate(104 226)">
+    <rect x="0" y="0" width="72" height="58" fill="#dbeafe" stroke="#7aaee8"/>
+    <rect x="54" y="28" width="72" height="58" fill="#dbeafe" stroke="#7aaee8"/>
+    <path d="M54 68 L84 46 L126 75 L126 86 L54 86 Z" fill="#7ccf9b"/>
+    <rect x="92" y="43" width="20" height="18" fill="#ef4444"/>
+    <text class="note" x="63" y="116" text-anchor="middle">weak / strong aug</text>
+  </g>
+
+  <path class="arrow" d="M314 222 C350 222 372 222 404 222"/>
+
+  <rect class="panel" x="408" y="112" width="292" height="226" rx="8"/>
+  <text class="label" x="438" y="152">EMA Teacher</text>
+  <text class="small" x="438" y="194">θ_t ← 0.999 θ_t + 0.001 θ_s</text>
+  <g transform="translate(462 222)">
+    <rect x="0" y="0" width="168" height="78" rx="8" fill="#eef6ff" stroke="#8dbfec" stroke-width="2"/>
+    <text class="small" x="84" y="32" text-anchor="middle">预测概率 P_t</text>
+    <text class="note" x="84" y="58" text-anchor="middle">softmax(logits)</text>
+  </g>
+
+  <path class="arrow" d="M702 222 C738 222 760 222 792 222"/>
+
+  <rect class="panel" x="796" y="112" width="198" height="226" rx="8"/>
+  <text class="label" x="826" y="152">置信筛选</text>
+  <text class="small" x="826" y="194">max(P_t) &gt; τ</text>
+  <g transform="translate(846 230)">
+    <rect x="0" y="0" width="98" height="78" fill="#0f172a" stroke="#94a3b8" stroke-width="2"/>
+    <path d="M54 12 C82 16 84 41 75 58 C61 79 29 67 31 41 C33 22 40 13 54 12 Z" fill="#f8fafc"/>
+    <circle cx="78" cy="22" r="8" fill="#ef4444"/>
+  </g>
+
+  <path class="arrow" d="M996 222 C1032 222 1054 222 1086 222"/>
+
+  <rect class="panel" x="1090" y="112" width="140" height="226" rx="8"/>
+  <text class="label" x="1118" y="152">初始伪标签</text>
+  <text class="small" x="1120" y="194">ŷ_u^0</text>
+  <g transform="translate(1112 224)">
+    <rect x="0" y="0" width="92" height="86" fill="#0f172a" stroke="#94a3b8" stroke-width="2"/>
+    <path d="M50 10 C78 14 81 41 71 62 C55 86 24 70 27 40 C29 22 36 12 50 10 Z" fill="#38bdf8"/>
+  </g>
+
+  <rect class="panel" x="54" y="430" width="326" height="224" rx="8"/>
+  <text class="label" x="84" y="470">标记数据原型</text>
+  <text class="small" x="84" y="512">由 labeled features 统计</text>
+  <g transform="translate(92 546)">
+    <circle class="node" cx="26" cy="26" r="22" fill="#38bdf8"/>
+    <text class="note" x="26" y="70" text-anchor="middle">变化原型</text>
+    <circle class="node" cx="168" cy="26" r="22" fill="#94a3b8"/>
+    <text class="note" x="168" y="70" text-anchor="middle">未变化原型</text>
+  </g>
+
+  <rect class="panel" x="466" y="430" width="348" height="224" rx="8"/>
+  <text class="label" x="496" y="470">Prototype + GCN 修正</text>
+  <text class="small" x="496" y="512">节点特征加入原型相似度</text>
+  <text class="small" x="496" y="550">图传播平滑同质区域</text>
+  <g transform="translate(580 574)">
+    <line x1="28" y1="30" x2="86" y2="18" stroke="#2f80ed" stroke-width="4"/>
+    <line x1="28" y1="30" x2="72" y2="76" stroke="#2f80ed" stroke-width="4"/>
+    <line x1="86" y1="18" x2="132" y2="56" stroke="#ef8a24" stroke-width="4" stroke-dasharray="7 6"/>
+    <line x1="72" y1="76" x2="132" y2="56" stroke="#ef8a24" stroke-width="4" stroke-dasharray="7 6"/>
+    <circle class="node" cx="28" cy="30" r="17" fill="#38bdf8"/>
+    <circle class="node" cx="86" cy="18" r="17" fill="#7ccf9b"/>
+    <circle class="node" cx="72" cy="76" r="17" fill="#f5b84b"/>
+    <circle class="node" cx="132" cy="56" r="17" fill="#ee7674"/>
+  </g>
+
+  <rect class="panel" x="898" y="430" width="332" height="224" rx="8"/>
+  <text class="label" x="928" y="470">最终伪标签监督</text>
+  <text class="small" x="928" y="512">ŷ_u = refine(ŷ_u^0, GCN, mask)</text>
+  <text class="small" x="928" y="550">L_u = CE(student(x_u), ŷ_u)</text>
+  <g transform="translate(1032 574)">
+    <rect x="0" y="0" width="96" height="70" rx="8" fill="#e8f4ff" stroke="#8dbfec" stroke-width="2"/>
+    <text class="note" x="48" y="30" text-anchor="middle">Student</text>
+    <text class="note" x="48" y="52" text-anchor="middle">更新 θ_s</text>
+  </g>
+
+  <path class="arrow" d="M1160 340 C1160 384 1084 398 1064 428"/>
+  <path class="arrow" d="M382 542 C412 542 434 542 462 542"/>
+  <path class="arrow" d="M816 542 C846 542 868 542 894 542"/>
+  <path class="arrow dash" d="M1072 654 C940 710 606 710 564 656"/>
+  <text class="note" x="724" y="714" text-anchor="middle">训练后 Student 通过 EMA 更新 Teacher，形成稳定闭环</text>
+</svg>

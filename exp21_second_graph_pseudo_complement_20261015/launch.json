@@ -1,0 +1,44 @@
+{
+  "created_local_epoch": 1792131583,
+  "pid": 1128135,
+  "physical_gpu": 1,
+  "cwd": "/home/homenew/yang/SCD/SCD-SAM/SCD",
+  "python": "/home/homenew/yang/anaconda3/envs/scd-sam-cuda12/bin/python",
+  "environment": "scd-sam-cuda12",
+  "dataset": "SECOND",
+  "semantic_graph_mode": "complement",
+  "checkpoint_resume": null,
+  "historical_best_reference": "/home/homenew/yang/SCD/SCD-SAM/SCD/checkpoints/SECOND/SECOND_pseudo_graph_stage2_seed42_epoch097_Fscd0.6112.pth",
+  "source_sha256": {
+    "train_complement_20261015.py": "72d4ecaa784ec2372748eef0f32128db1ff6312667bd71b7bee1233665e82fdd",
+    "graph_pseudo_complement.py": "ac60ebea591a627c11857400f044897a4dcc97e413c74bfa2734475eb6fc752d",
+    "test_graph_pseudo_complement.py": "dcbde41f012b6028150d3a7c6ea93d0656b9d50164e65d845a8f648200ea502a"
+  },
+  "config": {
+    "epochs": 100,
+    "seed": 42,
+    "batch_size": 2,
+    "effective_batch_size": 8,
+    "validation_batch_size": 2,
+    "input_size": 512,
+    "workers": 4,
+    "learning_rate": 0.00035,
+    "lambda_sem_u": 0.1,
+    "pseudo_alpha": [
+      0.03,
+      0.1
+    ],
+    "pseudo_start_epoch": 40,
+    "graph_gt_weight": 0.1,
+    "graph_edge_weight": 0.1,
+    "graph_pixel_pseudo_weight": 0.1,
+    "graph_stage2_start_epoch": 55,
+    "graph_pseudo_ramp_epochs": 10,
+    "sam_graph_stage1": true,
+    "sam_graph_stage2": true,
+    "ema_teacher": true,
+    "semantic_pseudo_labels": true,
+    "gradient_checkpointing": false,
+    "amp": true
+  }
+}

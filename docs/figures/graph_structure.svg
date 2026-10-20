@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">图结构模块示意图</title>
+  <desc id="desc">遥感变化检测中的超像素图结构构建流程，包括特征图、超像素节点、空间邻接、特征邻接、全局 TopK 连边和自适应融合权重。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34495e"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#1f2d3d" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg{fill:#f7fafc}
+      .panel{fill:#ffffff;stroke:#d7e0ea;stroke-width:2;filter:url(#shadow)}
+      .small{font:500 22px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#334155}
+      .tiny{font:500 18px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#475569}
+      .title{font:700 36px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .label{font:700 24px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .note{font:500 16px "Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#607089}
+      .arrow{stroke:#34495e;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .dash{stroke-dasharray:9 8}
+      .node{stroke:#fff;stroke-width:4}
+    </style>
+  </defs>
+  <rect class="bg" width="1280" height="760"/>
+  <text class="title" x="52" y="66">图结构模块：超像素节点 + 解耦邻接 + 全局交互</text>
+
+  <rect class="panel" x="48" y="110" width="300" height="250" rx="8"/>
+  <text class="label" x="78" y="150">输入特征</text>
+  <text class="tiny" x="78" y="184">Backbone 输出</text>
+  <text class="note" x="78" y="212">F ∈ R^[B,C,H,W]</text>
+  <g transform="translate(83 234)">
+    <rect x="0" y="0" width="92" height="66" fill="#cfe8ff" stroke="#6aa7d8" stroke-width="2"/>
+    <rect x="22" y="-16" width="92" height="66" fill="#bfe6d0" stroke="#55a873" stroke-width="2"/>
+    <rect x="44" y="-32" width="92" height="66" fill="#ffe1a8" stroke="#d69a22" stroke-width="2"/>
+    <text class="note" x="70" y="58" text-anchor="middle">双时相特征</text>
+  </g>
+  <g transform="translate(226 230)">
+    <rect x="0" y="0" width="78" height="78" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+    <path d="M0,25 C20,8 32,14 48,4 L78,18 L78,78 L0,78 Z" fill="#d7f2e3"/>
+    <path d="M0,25 C20,8 32,14 48,4 L78,18 L72,45 C54,42 44,54 30,48 C20,44 11,36 0,38 Z" fill="#b7ddff"/>
+    <path d="M0,38 C11,36 20,44 30,48 C44,54 54,42 72,45 L78,78 L0,78 Z" fill="#ffd9a6"/>
+    <text class="note" x="39" y="102" text-anchor="middle">sp_mask</text>
+  </g>
+
+  <path class="arrow" d="M350 235 C385 235 405 235 435 235"/>
+
+  <rect class="panel" x="440" y="110" width="360" height="250" rx="8"/>
+  <text class="label" x="470" y="150">超像素节点特征</text>
+  <text class="tiny" x="470" y="184">按超像素聚合像素特征</text>
+  <g transform="translate(500 218)">
+    <circle class="node" cx="28" cy="42" r="22" fill="#49a8f5"/>
+    <circle class="node" cx="102" cy="18" r="22" fill="#7ccf9b"/>
+    <circle class="node" cx="178" cy="56" r="22" fill="#f5b84b"/>
+    <circle class="node" cx="248" cy="22" r="22" fill="#ee7674"/>
+    <circle class="node" cx="296" cy="90" r="22" fill="#8b8ff5"/>
+    <text class="note" x="162" y="132" text-anchor="middle">vᵢ = [mean(Fᵢ), structureᵢ, prototype_simᵢ]</text>
+  </g>
+  <g transform="translate(470 306)">
+    <rect x="0" y="0" width="92" height="34" rx="6" fill="#e8f4ff" stroke="#9cc8ea"/>
+    <rect x="103" y="0" width="92" height="34" rx="6" fill="#edf9f0" stroke="#9fd6ad"/>
+    <rect x="206" y="0" width="112" height="34" rx="6" fill="#fff3d8" stroke="#e7be5c"/>
+    <text class="note" x="46" y="23" text-anchor="middle">面积/周长</text>
+    <text class="note" x="149" y="23" text-anchor="middle">中心坐标</text>
+    <text class="note" x="262" y="23" text-anchor="middle">原型相似度</text>
+  </g>
+
+  <path class="arrow" d="M803 235 C835 235 855 235 888 235"/>
+
+  <rect class="panel" x="892" y="110" width="340" height="250" rx="8"/>
+  <text class="label" x="922" y="150">图构建</text>
+  <g transform="translate(954 188)">
+    <line x1="48" y1="50" x2="128" y2="28" stroke="#2f80ed" stroke-width="5"/>
+    <line x1="48" y1="50" x2="84" y2="112" stroke="#2f80ed" stroke-width="5"/>
+    <line x1="128" y1="28" x2="190" y2="76" stroke="#ef8a24" stroke-width="5" stroke-dasharray="8 7"/>
+    <line x1="84" y1="112" x2="190" y2="76" stroke="#ef8a24" stroke-width="5" stroke-dasharray="8 7"/>
+    <line x1="48" y1="50" x2="220" y2="128" stroke="#7b61ff" stroke-width="4" stroke-dasharray="4 8"/>
+    <circle class="node" cx="48" cy="50" r="19" fill="#49a8f5"/>
+    <circle class="node" cx="128" cy="28" r="19" fill="#7ccf9b"/>
+    <circle class="node" cx="84" cy="112" r="19" fill="#f5b84b"/>
+    <circle class="node" cx="190" cy="76" r="19" fill="#ee7674"/>
+    <circle class="node" cx="220" cy="128" r="19" fill="#8b8ff5"/>
+  </g>
+  <g transform="translate(922 312)">
+    <circle cx="10" cy="0" r="6" fill="#2f80ed"/><text class="note" x="24" y="6">空间邻接 A_space</text>
+    <circle cx="168" cy="0" r="6" fill="#ef8a24"/><text class="note" x="182" y="6">特征邻接 A_feat</text>
+    <circle cx="10" cy="30" r="6" fill="#7b61ff"/><text class="note" x="24" y="36">跨样本 TopK 全局边</text>
+  </g>
+
+  <rect class="panel" x="208" y="438" width="864" height="210" rx="8"/>
+  <text class="label" x="244" y="482">自适应融合与 GCN 传播</text>
+  <text class="small" x="244" y="530">A = α_space A_space + α_feat A_feat + α_global A_global</text>
+  <text class="small" x="244" y="578">H' = SparseMDGCN(H, A)，输出节点级变化概率，再投影回像素区域</text>
+  <g transform="translate(830 482)">
+    <rect x="0" y="0" width="178" height="96" rx="8" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2"/>
+    <text class="note" x="89" y="32" text-anchor="middle">缓存邻接矩阵</text>
+    <text class="note" x="89" y="62" text-anchor="middle">减少重复建图</text>
+  </g>
+  <path class="arrow" d="M640 360 C640 390 640 405 640 436"/>
+</svg>

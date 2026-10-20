@@ -1,0 +1,19 @@
+{
+  "created_epoch": 1792295001,
+  "branch": "graph02",
+  "graph_pixel_pseudo_weight": 0.02,
+  "physical_gpu": 2,
+  "pid": 1332864,
+  "dataset": "SECOND",
+  "num_classes": 7,
+  "resume_checkpoint": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp21_second_graph_pseudo_complement_alpha01_03_20261016/output/checkpoints/SECOND/SECOND_pseudo_graph_stage2_seed42_epoch054_Fscd0.5961.pth",
+  "resume_checkpoint_sha256": "580e2ee7155ddc09254431449c442e1b6f779bc6c719612755b87cbf66d60975",
+  "next_epoch_expected": 55,
+  "stop_epoch_inclusive": 69,
+  "smoke_steps": 0,
+  "command_sha256": "7c8b6b8482391cc384b51320b08c3d770064a18a21096efbd3e6748a4be3f8f1",
+  "source_sha256": {
+    "train_ablation.py": "72d4ecaa784ec2372748eef0f32128db1ff6312667bd71b7bee1233665e82fdd",
+    "graph_pseudo_complement.py": "ac60ebea591a627c11857400f044897a4dcc97e413c74bfa2734475eb6fc752d"
+  }
+}

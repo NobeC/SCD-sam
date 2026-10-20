@@ -1,0 +1,36 @@
+{
+  "experiment": "exp20_hiucd_mini_graph_20261012_speedup",
+  "started_at": "2026-10-13T13:26:27.967539+00:00",
+  "pid": 495394,
+  "physical_gpu": 0,
+  "gpu_uuid": "GPU-23bed4f3-8d8a-7b31-263f-bf61acb710d4",
+  "entrypoint": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/code_graphgrad_20261013_speedup/train_hiucd.py",
+  "source_sha256": "956fc1d7380b2d3423675cbf7f7840cc91f6afc3e44acad72e66f7dcb0f687d6",
+  "resume_checkpoint": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/run_graphgrad_20261013_100ep/epoch003.pth",
+  "resume_epoch_completed": 3,
+  "next_epoch_zero_based": 4,
+  "resume_checkpoint_bytes": 1436115086,
+  "log": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/logs/train_graphgrad_20261013_speedup_100ep.log",
+  "output": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/run_graphgrad_20261013_speedup_100ep",
+  "command_file": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp20_hiucd_mini_graph_20261012/command_graphgrad_20261013_speedup.txt",
+  "parameters": {
+    "epochs_total": 100,
+    "seed": 42,
+    "batch_size": 2,
+    "effective_batch_size": 8,
+    "workers": 4,
+    "lr": 0.00035,
+    "amp": true,
+    "lambda_graph_gt": 0.1,
+    "lambda_edge_gt": 0.1,
+    "stage2": false,
+    "ema_pseudo_labels": false
+  },
+  "speedup_version": "worker_cached_graph_data_v1",
+  "exact_rng_resume": false,
+  "benchmark": {
+    "microbatches": 50,
+    "warm_interval_seconds_per_batch": 4.0301,
+    "old_observed_seconds_per_batch": 12.2
+  }
+}

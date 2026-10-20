@@ -1,0 +1,17 @@
+{
+  "experiment": "exp20_hiucd_mini_graph_20261012",
+  "pid": 273930,
+  "device": "physical GPU0 (shared only with matched baseline exp19)",
+  "split_sha256": "5b1ea8b080cb680aee158cb002c3695380d0f2c3e7ced3311d92881c925dbb558",
+  "epochs": 100,
+  "seed": 42,
+  "graph": true,
+  "graph_policy": "SAM Stage-1 GT prototype and edge supervision; no EMA/pseudo-label Stage-2",
+  "lambda_graph_gt": 0.1,
+  "lambda_edge_gt": 0.1,
+  "sam_cache_complete": true,
+  "sam_cache_entries": 980,
+  "cache_manifest": "sam_cache/HiUCDMini/cache_manifest.json",
+  "run_dir": "run_final_100ep",
+  "log": "logs/train_final_100ep.log"
+}

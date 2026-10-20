@@ -1,0 +1,12 @@
+--- exp20_hiucd_mini_graph_20261012/code_fullgraph_stage2_20261015/train_hiucd.py
++++ exp20_hiucd_mini_graph_20261012/code_fullgraph_stage2_20261015/train_hiucd.py
+@@ -3 +3,2 @@
+ import argparse
++import copy
+@@ -22 +23,6 @@
+ from datasets.hiucd_mini import HiUCDMini
++from utils.pseudo_label import (
++    generate_entropy_pseudo_label, accumulate_class_precision_stats,
++    update_class_precision_from_stats,
++)
++from models.graph.pseudo_fusion import graph_pixel_pseudo_loss, reproject_stage2_batch, teacher_graph_veto

@@ -1,0 +1,781 @@
+import os
+import time
+import copy
+import random
+import argparse
+import numpy as np
+import torch
+import torch.nn as nn
+from skimage import io
+import torch.nn.functional as F
+from tensorboardX import SummaryWriter
+from torch.utils.data import DataLoader
+
+working_path = os.path.dirname(os.path.abspath(__file__))
+
+from utils.loss import CrossEntropyLoss2d, weighted_BCE_logits, ChangeSimilarity
+from utils.utils import accuracy, SCDD_eval_all, AverageMeter
+from utils.common import ScaleInOutput, CosOneCycle
+from utils.pseudo_label import (
+    generate_entropy_pseudo_label, accumulate_class_precision_stats,
+    update_class_precision_from_stats)
+from utils.experiment_state import build_training_state, restore_training_state
+from utils.semantic_pseudo import build_semantic_regions, supervised_semantic_loss
+
+
+# Data and model choose
+_dataset_parser = argparse.ArgumentParser(add_help=False)
+_dataset_parser.add_argument("--dataset", choices=("landsat", "second"),
+                             default=os.environ.get("SCD_DATASET", "landsat"))
+_selected_dataset, _ = _dataset_parser.parse_known_args()
+os.environ["SCD_DATASET"] = _selected_dataset.dataset
+###############################################
+from configs.datasets import resolve_training_config
+from datasets import RS_ST as RS
+from main_model import ChangeDetection
+
+NET_NAME = 'SAMNet'
+
+training_config = resolve_training_config(
+    os.sys.argv[1:], working_path=working_path, model_num_classes=RS.num_classes)
+DATA_NAME = training_config.dataset.name
+
+###############################################
+# Options
+###############################################
+args = {
+    'train_batch_size': 2,
+    'val_batch_size': 2,
+    'lr': 0.1,
+    'epochs': 100,
+    'gpu': True,
+    'psd_TTA': True,
+    'lr_decay_power': 1.5,
+    'train_crop_size': False,
+    'weight_decay': 5e-4,
+    'momentum': 0.9,
+    'print_freq': 50,
+    'predict_step': 5,
+    'pseudo_thred': 0.9,
+    'ema_decay': 0.99,
+    'lambda_sem_u': 0.5,
+    'lambda_sem_sup': 1.0,
+    'pred_dir': str(training_config.pred_dir),
+    'vis_dir': str(training_config.vis_dir),
+    'chkpt_dir': str(training_config.checkpoint_dir),
+    'log_dir': str(training_config.log_dir),
+    'load_path': str(training_config.load_path)
+}
+###############################################
+
+if not os.path.exists(args['log_dir']): os.makedirs(args['log_dir'])
+if not os.path.exists(args['pred_dir']): os.makedirs(args['pred_dir'])
+if not os.path.exists(args['vis_dir']): os.makedirs(args['vis_dir'])
+if not os.path.exists(args['chkpt_dir']): os.makedirs(args['chkpt_dir'])
+writer = SummaryWriter(args['log_dir'])
+scale = ScaleInOutput(512)
+
+
+def _tensor_stats(tensor):
+    if not torch.is_tensor(tensor):
+        return 'not_tensor'
+    with torch.no_grad():
+        data = tensor.detach()
+        finite = torch.isfinite(data)
+        if not finite.any():
+            return 'shape={} dtype={} finite=0/{} all_nonfinite'.format(
+                tuple(data.shape), data.dtype, data.numel())
+        finite_data = data[finite].float()
+        return 'shape={} dtype={} finite={}/{} min={:.4g} max={:.4g} mean={:.4g}'.format(
+            tuple(data.shape), data.dtype, int(finite.sum().item()), data.numel(),
+            float(finite_data.min().item()), float(finite_data.max().item()),
+            float(finite_data.mean().item()))
+
+
+def _flatten_tensors(value):
+    if torch.is_tensor(value):
+        return [value]
+    if isinstance(value, (tuple, list)):
+        tensors = []
+        for item in value:
+            tensors.extend(_flatten_tensors(item))
+        return tensors
+    if isinstance(value, dict):
+        tensors = []
+        for item in value.values():
+            tensors.extend(_flatten_tensors(item))
+        return tensors
+    return []
+
+
+def _first_nonfinite_state(module):
+    for name, tensor in module.named_parameters():
+        if tensor is not None and not torch.isfinite(tensor).all().item():
+            return 'parameter', name, _tensor_stats(tensor)
+    for name, tensor in module.named_buffers():
+        if tensor is not None and torch.is_floating_point(tensor) and not torch.isfinite(tensor).all().item():
+            return 'buffer', name, _tensor_stats(tensor)
+    return None, None, None
+
+
+def _attach_nonfinite_hooks(module):
+    state = {'triggered': False}
+    handles = []
+
+    def hook(name):
+        def _hook(mod, inputs, output):
+            if state['triggered']:
+                return
+            tensors = _flatten_tensors(output)
+            if tensors and any(not torch.isfinite(t).all().item() for t in tensors):
+                state['triggered'] = True
+                input_stats = [_tensor_stats(t) for t in _flatten_tensors(inputs)[:3]]
+                output_stats = [_tensor_stats(t) for t in tensors[:3]]
+                raise FloatingPointError(
+                    'First non-finite module output: {} ({}) inputs={} outputs={}'.format(
+                        name, mod.__class__.__name__, input_stats, output_stats))
+        return _hook
+
+    for name, child in module.named_modules():
+        if name:
+            handles.append(child.register_forward_hook(hook(name)))
+    return handles
+
+
+def seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
+
+def build_optimizer(net, opt):
+    if opt.finetune:
+        params = [
+            {"params": [param for name, param in net.named_parameters()
+                        if param.requires_grad and "backbone" in name],
+             "lr": opt.learning_rate / 10},
+            {"params": [param for name, param in net.named_parameters()
+                        if param.requires_grad and "backbone" not in name],
+             "lr": opt.learning_rate},
+        ]
+        print("Using finetune for model")
+    else:
+        params = [param for param in net.parameters() if param.requires_grad]
+    return torch.optim.AdamW(params, lr=opt.learning_rate, weight_decay=0.001)
+
+
+def update_ema_teacher(student, teacher, ema_decay, global_step):
+    """Update teacher with the exponential moving average of the student."""
+    ema_decay = min(1.0 - 1.0 / float(global_step + 1), ema_decay)
+    with torch.no_grad():
+        student_state = student.state_dict()
+        teacher_state = teacher.state_dict()
+        for key, teacher_value in teacher_state.items():
+            student_value = student_state[key].detach()
+            if teacher_value.dtype.is_floating_point:
+                teacher_value.mul_(ema_decay).add_(student_value, alpha=1.0 - ema_decay)
+            else:
+                teacher_value.copy_(student_value)
+
+
+def get_lambda_sem_u(opt, curr_epoch):
+    if (not opt.use_semantic_pseudo) or curr_epoch < opt.pseudo_start_epoch:
+        return 0.0
+    ramp = min(1.0, float(curr_epoch - opt.pseudo_start_epoch + 1) / float(max(opt.pseudo_rampup_epoch, 1)))
+    return opt.lambda_sem_u * ramp
+
+
+def get_gamma_per_class(opt, curr_epoch, num_classes, class_precision, device):
+    if curr_epoch < opt.pseudo_start_epoch:
+        base_ratio = opt.pseudo_alpha_start
+    else:
+        denom = max(opt.epochs - opt.pseudo_start_epoch, 1)
+        progress = min(1.0, float(curr_epoch - opt.pseudo_start_epoch) / float(denom))
+        base_ratio = opt.pseudo_alpha_start + (opt.pseudo_alpha_end - opt.pseudo_alpha_start) * progress
+
+    gamma = torch.ones(num_classes, device=device) * base_ratio
+    gamma = gamma * class_precision.to(device=device)
+    gamma = gamma.clamp(min=opt.pseudo_min_ratio, max=opt.pseudo_alpha_end)
+    gamma[0] = 0.0
+    return gamma
+
+
+def semantic_pseudo_loss_entropy(
+    outputs_A,
+    outputs_B,
+    teacher_outputs_A,
+    teacher_outputs_B,
+    teacher_change,
+    labels_A,
+    labels_B,
+    gamma_per_class,
+    opt,
+):
+    num_classes = outputs_A.size(1)
+    gt_unchanged_mask = (labels_A == 0) & (labels_B == 0)
+    teacher_change_prob = torch.sigmoid(teacher_change).squeeze(1)
+    teacher_unchanged_mask = teacher_change_prob < opt.pseudo_change_thr
+    candidate_mask = gt_unchanged_mask & teacher_unchanged_mask
+
+    pseudo_A, reliable_A, entropy_A = generate_entropy_pseudo_label(
+        teacher_outputs_A, candidate_mask, num_classes, gamma_per_class, opt.pseudo_ignore_index)
+    pseudo_B, reliable_B, entropy_B = generate_entropy_pseudo_label(
+        teacher_outputs_B, candidate_mask, num_classes, gamma_per_class, opt.pseudo_ignore_index)
+
+    loss_terms = []
+    if reliable_A.any():
+        loss_terms.append(F.cross_entropy(outputs_A, pseudo_A, ignore_index=opt.pseudo_ignore_index))
+    if reliable_B.any():
+        loss_terms.append(F.cross_entropy(outputs_B, pseudo_B, ignore_index=opt.pseudo_ignore_index))
+    if not loss_terms:
+        zero_loss = outputs_A.sum() * 0.0
+        return zero_loss, zero_loss.detach(), pseudo_A, pseudo_B, reliable_A | reliable_B, entropy_A, entropy_B
+
+    loss = sum(loss_terms) / len(loss_terms)
+    reliable_ratio = ((reliable_A | reliable_B).float().mean()).detach()
+    return loss, reliable_ratio, pseudo_A, pseudo_B, reliable_A | reliable_B, entropy_A, entropy_B
+
+
+def image_tensor_to_uint8(img, time_key):
+    img = img.detach().cpu().float().numpy().transpose(1, 2, 0)
+    img = RS.tensor2int(img, time_key)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def save_pseudo_visualization(imgs_A, imgs_B, labels_A, labels_B, pseudo_A, pseudo_B,
+                              valid_mask, curr_epoch, iteration):
+    if pseudo_A is None or pseudo_B is None or valid_mask is None:
+        return
+
+    with torch.no_grad():
+        unchanged_mask = ((labels_A == 0) & (labels_B == 0))[0].detach().cpu().numpy().astype(np.uint8) * 255
+        valid = valid_mask[0].detach().cpu().bool()
+        pseudo_A_vis = pseudo_A[0].detach().cpu().long()
+        pseudo_B_vis = pseudo_B[0].detach().cpu().long()
+        pseudo_A_vis[(~valid) | (pseudo_A_vis < 0) | (pseudo_A_vis >= RS.num_classes)] = 0
+        pseudo_B_vis[(~valid) | (pseudo_B_vis < 0) | (pseudo_B_vis >= RS.num_classes)] = 0
+
+        img_A = image_tensor_to_uint8(imgs_A[0], 'A')
+        img_B = image_tensor_to_uint8(imgs_B[0], 'B')
+        unchanged_rgb = np.repeat(unchanged_mask[:, :, None], 3, axis=2)
+        valid_rgb = np.repeat((valid.numpy().astype(np.uint8) * 255)[:, :, None], 3, axis=2)
+        pseudo_A_color = RS.Index2Color(pseudo_A_vis.numpy())
+        pseudo_B_color = RS.Index2Color(pseudo_B_vis.numpy())
+        canvas = np.concatenate([img_A, img_B, unchanged_rgb, pseudo_A_color, pseudo_B_color, valid_rgb], axis=1)
+
+    out_name = 'epoch%03d_iter%05d.png' % (curr_epoch, iteration)
+    io.imsave(os.path.join(args['vis_dir'], out_name), canvas)
+
+
+def _run_mode(opt):
+    if opt.use_semantic_pseudo:
+        return "pseudo"
+    if opt.use_ema_teacher:
+        return "ema"
+    return "supervised"
+
+
+def _run_config(opt, dataset_name):
+    return {
+        "dataset": dataset_name, "num_classes": opt.num_classes,
+        "seed": opt.seed, "mode": _run_mode(opt),
+        "use_ema_teacher": opt.use_ema_teacher, "use_semantic_pseudo": opt.use_semantic_pseudo,
+        "ema_decay": opt.ema_decay, "pseudo_start_epoch": opt.pseudo_start_epoch,
+        "pseudo_alpha_start": opt.pseudo_alpha_start, "pseudo_alpha_end": opt.pseudo_alpha_end,
+        "pseudo_min_ratio": opt.pseudo_min_ratio, "pseudo_ignore_index": opt.pseudo_ignore_index,
+        "pseudo_change_thr": opt.pseudo_change_thr, "lambda_sem_u": opt.lambda_sem_u,
+        "lambda_sem_sup": opt.lambda_sem_sup, "pseudo_rampup_epoch": opt.pseudo_rampup_epoch,
+        "pseudo_precision_init": opt.pseudo_precision_init,
+        "pseudo_precision_momentum": opt.pseudo_precision_momentum,
+    }
+
+def main(opt):
+    training_config = resolve_training_config(
+        ["--dataset", opt.dataset, "--num-classes", str(opt.num_classes)],
+        working_path=working_path,
+        model_num_classes=opt.num_classes)
+    global scale
+    seed_everything(opt.seed)
+    if torch.cuda.is_available():
+        visible_device_count = torch.cuda.device_count()
+        if opt.cuda < 0 or opt.cuda >= visible_device_count:
+            raise ValueError(
+                "Invalid logical CUDA device {}: this process sees {} device(s). "
+                "When CUDA_VISIBLE_DEVICES selects one physical GPU, use --cuda 0.".format(
+                    opt.cuda, visible_device_count
+                )
+            )
+        torch.cuda.set_device(int(opt.cuda))
+    scale = ScaleInOutput(opt.input_size)
+    args['epochs'] = opt.epochs
+    args['gpu'] = torch.cuda.is_available()
+    net = ChangeDetection(opt).cuda()
+    net_psd = None
+    if opt.use_ema_teacher:
+        net_psd = copy.deepcopy(net)
+        net_psd.eval()
+        freeze_model(net_psd)
+
+    train_set = RS.Data('train', random_flip=True)
+    generator = torch.Generator()
+    generator.manual_seed(opt.seed)
+    train_loader = DataLoader(train_set, batch_size=opt.batch_size, shuffle=True,
+                              num_workers=opt.num_workers, pin_memory=args['gpu'],
+                              drop_last=False, generator=generator)
+    val_set = RS.Data('val')
+    val_loader = DataLoader(val_set, batch_size=opt.val_batch_size, shuffle=False,
+                            num_workers=opt.num_workers, pin_memory=args['gpu'])
+
+    criterion = CrossEntropyLoss2d(ignore_index=0).cuda()
+    optimizer = build_optimizer(net, opt)
+    scheduler = CosOneCycle(optimizer, max_lr=opt.learning_rate, epochs=opt.epochs)
+    resume_state = None
+    if opt.resume:
+        if not os.path.isfile(opt.resume):
+            raise FileNotFoundError("Resume checkpoint not found: {}".format(opt.resume))
+        try:
+            checkpoint = torch.load(opt.resume, map_location="cpu", weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(opt.resume, map_location="cpu")
+        resume_state = restore_training_state(
+            checkpoint, net, net_psd, optimizer, scheduler,
+            active_run_config={"dataset": training_config.dataset.name,
+                               "num_classes": training_config.model_num_classes})
+        print("Resumed complete training state from {} at epoch {} optimizer_step {}".format(
+            opt.resume, resume_state.epoch, resume_state.optimizer_step))
+    else:
+        for _ in range(opt.start_epoch):
+            scheduler.step()
+
+    train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loader,
+          resume_state, _run_config(opt, training_config.dataset.name))
+    writer.close()
+    print('Training finished.')
+
+def train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loader,
+          resume_state, run_config):
+    bestaccT = 0
+    bestFscdV = 0.0
+    bestaccV = 0.0
+    bestloss = 1.0
+    begin_time = time.time()
+    criterion_sc = ChangeSimilarity().cuda()
+    device = next(net.parameters()).device
+    class_precision = torch.ones(RS.num_classes, device=device) * opt.pseudo_precision_init
+    class_precision[0] = 0.0
+    optimizer_step = 0
+    if resume_state is not None:
+        class_precision = resume_state.class_precision.to(device=device)
+        optimizer_step = resume_state.optimizer_step
+        bestaccT = resume_state.best_metrics.get("train_acc", bestaccT)
+        bestFscdV = resume_state.best_metrics.get("Fscd", bestFscdV)
+        bestaccV = resume_state.best_metrics.get("accuracy", bestaccV)
+        bestloss = resume_state.best_metrics.get("loss", bestloss)
+    scaler = torch.cuda.amp.GradScaler(enabled=opt.amp)
+    debug_handles = _attach_nonfinite_hooks(net) if opt.debug_nonfinite else []
+    if opt.debug_nonfinite:
+        print("Non-finite forward hooks enabled.")
+
+    accumulate_iter = opt.effective_batch_size // opt.batch_size
+    print("Accumulate_iter={} batch_size={} effective_batch_size={}".format(
+        accumulate_iter, opt.batch_size, opt.batch_size * accumulate_iter))
+    print("EMA teacher={} semantic_pseudo={} pseudo_start_epoch={} lambda_sem_u={}".format(
+        opt.use_ema_teacher, opt.use_semantic_pseudo, opt.pseudo_start_epoch, opt.lambda_sem_u))
+    print("AMP={} gradient_checkpointing={} cuda={} ({})".format(
+        opt.amp, opt.gradient_checkpointing, opt.cuda, torch.cuda.get_device_name(device)))
+
+    curr_epoch = resume_state.epoch if resume_state is not None else opt.start_epoch
+    optimizer.zero_grad(set_to_none=True)
+    while True:
+        torch.cuda.empty_cache()
+        net.train()
+
+        start = time.time()
+        acc_meter = AverageMeter()
+        train_sem_sup_loss = AverageMeter()
+        train_change_loss = AverageMeter()
+        train_bn_loss = AverageMeter()
+        train_sc_loss = AverageMeter()
+        train_pseudo_loss = AverageMeter()
+        train_pseudo_ratio = AverageMeter()
+        train_lambda_sem_u = AverageMeter()
+        epoch_precision_tp = torch.zeros(RS.num_classes, device=device)
+        epoch_precision_fp = torch.zeros(RS.num_classes, device=device)
+
+        curr_iter = curr_epoch * len(train_loader)
+        for i, data in enumerate(train_loader):
+            running_iter = curr_iter + i + 1
+            imgs_A, imgs_B, labels_A, labels_B = data
+            if args['gpu']:
+                imgs_A = imgs_A.cuda().float()
+                imgs_B = imgs_B.cuda().float()
+                labels_A = labels_A.cuda().long()
+                labels_B = labels_B.cuda().long()
+            changed_mask, _ = build_semantic_regions(labels_A, labels_B)
+            labels_bn = changed_mask.unsqueeze(1).float()
+            vis_imgs_A, vis_imgs_B = imgs_A.detach(), imgs_B.detach()
+
+            imgs_A, imgs_B = scale.scale_input((imgs_A, imgs_B))
+
+            with torch.cuda.amp.autocast(enabled=opt.amp):
+                outs = net(imgs_A, imgs_B)
+                outs = scale.scale_output(outs)
+                outputs_A, outputs_B, out_change = outs
+
+                assert outputs_A.size()[1] == RS.num_classes
+
+                loss_sem_sup = supervised_semantic_loss(outputs_A, outputs_B, labels_A, labels_B)
+                loss_bn = weighted_BCE_logits(out_change, labels_bn)
+                loss_sc = criterion_sc(outputs_A[:, 1:], outputs_B[:, 1:], labels_bn)
+                loss_change = loss_bn + loss_sc
+
+            pseudo_A = None
+            pseudo_B = None
+            valid_mask = None
+            loss_pseudo = outputs_A.sum() * 0.0
+            pseudo_ratio = loss_pseudo.detach()
+            lambda_sem_u_current = get_lambda_sem_u(opt, curr_epoch)
+
+            if opt.use_ema_teacher and opt.use_semantic_pseudo and curr_epoch >= opt.pseudo_start_epoch:
+                with torch.no_grad(), torch.cuda.amp.autocast(enabled=opt.amp):
+                    teacher_outs = net_psd(imgs_A, imgs_B)
+                    teacher_outs = scale.scale_output(teacher_outs)
+                    teacher_outputs_A, teacher_outputs_B, teacher_change = teacher_outs
+
+                    valid_A = labels_A > 0
+                    valid_B = labels_B > 0
+                    if valid_A.any():
+                        epoch_precision_tp, epoch_precision_fp = accumulate_class_precision_stats(
+                            teacher_outputs_A, labels_A, valid_A, RS.num_classes,
+                            epoch_precision_tp, epoch_precision_fp)
+                    if valid_B.any():
+                        epoch_precision_tp, epoch_precision_fp = accumulate_class_precision_stats(
+                            teacher_outputs_B, labels_B, valid_B, RS.num_classes,
+                            epoch_precision_tp, epoch_precision_fp)
+                    gamma_per_class = get_gamma_per_class(opt, curr_epoch, RS.num_classes, class_precision, device)
+
+                with torch.cuda.amp.autocast(enabled=opt.amp):
+                    loss_pseudo, pseudo_ratio, pseudo_A, pseudo_B, valid_mask, _, _ = semantic_pseudo_loss_entropy(
+                        outputs_A, outputs_B, teacher_outputs_A, teacher_outputs_B, teacher_change,
+                        labels_A, labels_B, gamma_per_class, opt)
+
+                if (i == 0) or ((i + 1) % args['predict_step'] == 0):
+                    save_pseudo_visualization(
+                        vis_imgs_A, vis_imgs_B, labels_A, labels_B,
+                        pseudo_A, pseudo_B, valid_mask, curr_epoch, i + 1)
+
+            with torch.cuda.amp.autocast(enabled=opt.amp):
+                loss = opt.lambda_sem_sup * loss_sem_sup + loss_change + lambda_sem_u_current * loss_pseudo
+
+            loss_components = {
+                'loss_sem_sup': loss_sem_sup,
+                'loss_bn': loss_bn,
+                'loss_sc': loss_sc,
+                'loss_sem_u': loss_pseudo,
+                'loss_total': loss,
+            }
+            non_finite_losses = [
+                name for name, value in loss_components.items()
+                if not torch.isfinite(value).all().item()
+            ]
+            if non_finite_losses:
+                non_finite_outputs = [
+                    name for name, value in (
+                        ('outputs_A', outputs_A),
+                        ('outputs_B', outputs_B),
+                        ('out_change', out_change),
+                    ) if not torch.isfinite(value).all().item()
+                ]
+                state_kind, state_name, state_stats = _first_nonfinite_state(net)
+                print("Non-finite debug: imgs_A={} imgs_B={} labels_A={} labels_B={} first_state={}:{} {}".format(
+                    _tensor_stats(imgs_A), _tensor_stats(imgs_B), _tensor_stats(labels_A),
+                    _tensor_stats(labels_B), state_kind, state_name, state_stats))
+                optimizer.zero_grad(set_to_none=True)
+                raise FloatingPointError(
+                    "Non-finite training values at epoch {} iter {}: losses={}, outputs={}. "
+                    "The optimizer was not updated; restart from the last finite checkpoint."
+                    .format(curr_epoch, i + 1, non_finite_losses, non_finite_outputs)
+                )
+
+            window_start = (i // accumulate_iter) * accumulate_iter
+            window_size = min(accumulate_iter, len(train_loader) - window_start)
+            scaler.scale(loss / window_size).backward()
+            should_step = ((i + 1) % accumulate_iter) == 0 or (i + 1) == len(train_loader)
+            if should_step:
+                scaler.unscale_(optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), opt.grad_clip)
+                if not torch.isfinite(grad_norm):
+                    optimizer.zero_grad(set_to_none=True)
+                    scaler.update()
+                    print('[Warning] non-finite gradient at epoch {} iter {}; '
+                          'optimizer and EMA updates skipped.'.format(curr_epoch, i + 1))
+                    continue
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_step += 1
+                if opt.use_ema_teacher:
+                    update_ema_teacher(net, net_psd, opt.ema_decay, optimizer_step)
+
+            labels_A_np = labels_A.cpu().detach().numpy()
+            labels_B_np = labels_B.cpu().detach().numpy()
+            outputs_A_cpu = outputs_A.cpu().detach()
+            outputs_B_cpu = outputs_B.cpu().detach()
+            change_mask = F.sigmoid(out_change).cpu().detach() > 0.5
+            preds_A = torch.argmax(outputs_A_cpu, dim=1)
+            preds_B = torch.argmax(outputs_B_cpu, dim=1)
+            preds_A = (preds_A * change_mask.squeeze().long()).numpy()
+            preds_B = (preds_B * change_mask.squeeze().long()).numpy()
+
+            acc_curr_meter = AverageMeter()
+            for (pred_A, pred_B, label_A, label_B) in zip(preds_A, preds_B, labels_A_np, labels_B_np):
+                acc_A, valid_sum_A = accuracy(pred_A, label_A)
+                acc_B, valid_sum_B = accuracy(pred_B, label_B)
+                acc = (acc_A + acc_B) * 0.5
+                acc_curr_meter.update(acc)
+            acc_meter.update(acc_curr_meter.avg)
+            train_sem_sup_loss.update(loss_sem_sup.cpu().detach().numpy())
+            train_change_loss.update(loss_change.cpu().detach().numpy())
+            train_bn_loss.update(loss_bn.cpu().detach().numpy())
+            train_sc_loss.update(loss_sc.cpu().detach().numpy())
+            train_pseudo_loss.update(loss_pseudo.cpu().detach().numpy())
+            train_pseudo_ratio.update(pseudo_ratio.cpu().detach().numpy())
+            train_lambda_sem_u.update(lambda_sem_u_current)
+
+            curr_time = time.time() - start
+
+            if (i + 1) % args['print_freq'] == 0:
+                precision_log = ['%.3f' % v for v in class_precision.detach().cpu().tolist()]
+                print('[epoch %d] [iter %d / %d %.1fs] [lr %f] [loss_sem_sup %.4f loss_change %.4f loss_sem_u %.4f lambda_sem_u %.4f pseudo_ratio %.3f bn_loss %.4f sc_loss %.4f acc %.2f] precision=%s' % (
+                    curr_epoch, i + 1, len(train_loader), curr_time, optimizer.param_groups[0]['lr'],
+                    train_sem_sup_loss.val, train_change_loss.val, train_pseudo_loss.val,
+                    train_lambda_sem_u.val, train_pseudo_ratio.val, train_bn_loss.val,
+                    train_sc_loss.val, acc_meter.val * 100, precision_log))
+                writer.add_scalar('train/loss_sem_sup', train_sem_sup_loss.val, running_iter)
+                writer.add_scalar('train/loss_change', train_change_loss.val, running_iter)
+                writer.add_scalar('train/loss_bn', train_bn_loss.val, running_iter)
+                writer.add_scalar('train/loss_sc', train_sc_loss.val, running_iter)
+                writer.add_scalar('train/loss_sem_u', train_pseudo_loss.val, running_iter)
+                writer.add_scalar('train/lambda_sem_u_current', train_lambda_sem_u.val, running_iter)
+                writer.add_scalar('train/pseudo_ratio', train_pseudo_ratio.val, running_iter)
+                for cls_idx, cls_precision in enumerate(class_precision.detach().cpu().tolist()):
+                    writer.add_scalar('train/class_precision/class_%d' % cls_idx, cls_precision, running_iter)
+                writer.add_scalar('train accuracy', acc_meter.val, running_iter)
+                writer.add_scalar('lr', optimizer.param_groups[0]['lr'], running_iter)
+
+        scheduler.step()
+        if opt.use_ema_teacher and opt.use_semantic_pseudo and curr_epoch >= opt.pseudo_start_epoch:
+            class_precision = update_class_precision_from_stats(
+                epoch_precision_tp, epoch_precision_fp, class_precision,
+                opt.pseudo_precision_momentum)
+            class_precision[0] = 0.0
+        print('Epoch %d class_precision=%s lambda_sem_u=%.4f' % (
+            curr_epoch,
+            ['%.3f' % v for v in class_precision.detach().cpu().tolist()],
+            get_lambda_sem_u(opt, curr_epoch)))
+
+        Fscd_v, mIoU_v, Sek_v, acc_v, loss_v = validate(val_loader, net, criterion, curr_epoch)
+        if acc_meter.avg > bestaccT: bestaccT = acc_meter.avg
+        is_best = Fscd_v > bestFscdV
+        if is_best:
+            bestFscdV = Fscd_v
+            bestaccV = acc_v
+            bestloss = loss_v
+        checkpoint_payload = build_training_state(
+            student=net, teacher=net_psd, optimizer=optimizer, scheduler=scheduler,
+            epoch=curr_epoch + 1, optimizer_step=optimizer_step,
+            class_precision=class_precision,
+            best_metrics={"train_acc": bestaccT, "Fscd": bestFscdV, "mIoU": mIoU_v,
+                          "Sek": Sek_v, "accuracy": bestaccV, "loss": bestloss},
+            run_config=run_config)
+        checkpoint_name = "{}_{}_seed{}_epoch{:03d}_Fscd{:.4f}.pth".format(
+            run_config["dataset"], run_config["mode"], run_config["seed"], curr_epoch, Fscd_v)
+        if is_best or (curr_epoch + 1) % args["predict_step"] == 0:
+            torch.save(checkpoint_payload, os.path.join(args["chkpt_dir"], checkpoint_name))
+        print('Total time: %.1fs Best rec: Train acc %.2f, Val Fscd %.2f acc %.2f loss %.4f' % (
+        time.time() - begin_time, bestaccT * 100, bestFscdV * 100, bestaccV * 100, bestloss))
+        curr_epoch += 1
+        if curr_epoch >= args['epochs']:
+            return
+
+def validate(val_loader, net, criterion, curr_epoch):
+    # the following code is written assuming that batch size is 1
+    net.eval()
+    torch.cuda.empty_cache()
+    start = time.time()
+
+    val_loss = AverageMeter()
+    acc_meter = AverageMeter()
+
+    preds_all = []
+    labels_all = []
+    for vi, data in enumerate(val_loader):
+        imgs_A, imgs_B, labels_A, labels_B = data
+        if args['gpu']:
+            imgs_A = imgs_A.cuda().float()
+            imgs_B = imgs_B.cuda().float()
+            labels_A = labels_A.cuda().long()
+            labels_B = labels_B.cuda().long()
+
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=opt.amp):
+            imgs_A, imgs_B = scale.scale_input((imgs_A, imgs_B))
+            outs = net(imgs_A, imgs_B)
+            outs = scale.scale_output(outs)
+            outputs_A, outputs_B, out_change = outs
+
+            loss_A = criterion(outputs_A, labels_A)
+            loss_B = criterion(outputs_B, labels_B)
+            loss = loss_A * 0.5 + loss_B * 0.5
+        val_loss.update(loss.cpu().detach().numpy())
+
+        labels_A = labels_A.cpu().detach().numpy()
+        labels_B = labels_B.cpu().detach().numpy()
+        outputs_A = outputs_A.cpu().detach()
+        outputs_B = outputs_B.cpu().detach()
+        change_mask = F.sigmoid(out_change).cpu().detach() > 0.5
+        preds_A = torch.argmax(outputs_A, dim=1)
+        preds_B = torch.argmax(outputs_B, dim=1)
+        preds_A = (preds_A * change_mask.squeeze().long()).numpy()
+        preds_B = (preds_B * change_mask.squeeze().long()).numpy()
+        for (pred_A, pred_B, label_A, label_B) in zip(preds_A, preds_B, labels_A, labels_B):
+            acc_A, valid_sum_A = accuracy(pred_A, label_A)
+            acc_B, valid_sum_B = accuracy(pred_B, label_B)
+            preds_all.append(pred_A)
+            preds_all.append(pred_B)
+            labels_all.append(label_A)
+            labels_all.append(label_B)
+            acc = (acc_A + acc_B) * 0.5
+            acc_meter.update(acc)
+
+        if curr_epoch % args['predict_step'] == 0 and vi == 0:
+            pred_A_color = RS.Index2Color(preds_A[0])
+            pred_B_color = RS.Index2Color(preds_B[0])
+            io.imsave(os.path.join(args['pred_dir'], NET_NAME + '_A.png'), pred_A_color)
+            io.imsave(os.path.join(args['pred_dir'], NET_NAME + '_B.png'), pred_B_color)
+            print('Prediction saved!')
+
+    Fscd, IoU_mean, Sek = SCDD_eval_all(preds_all, labels_all, RS.num_classes)
+
+    curr_time = time.time() - start
+    print('%.1fs Val loss: %.2f Fscd: %.2f IoU: %.2f Sek: %.2f Accuracy: %.2f'\
+    %(curr_time, val_loss.average(), Fscd*100, IoU_mean*100, Sek*100, acc_meter.average()*100))
+
+    writer.add_scalar('val_loss', val_loss.average(), curr_epoch)
+    writer.add_scalar('val_Fscd', Fscd, curr_epoch)
+    writer.add_scalar('val_Accuracy', acc_meter.average(), curr_epoch)
+
+    return Fscd, IoU_mean, Sek, acc_meter.avg, val_loss.avg
+
+
+def freeze_model(model):
+    for param in model.parameters():
+        param.requires_grad = False
+    for module in model.modules():
+        if isinstance(module, nn.BatchNorm2d):
+            module.eval()
+
+
+def adjust_lr(optimizer, curr_iter, all_iter, init_lr=args['lr']):
+    scale_running_lr = ((1. - float(curr_iter) / all_iter) ** args['lr_decay_power'])
+    running_lr = init_lr * scale_running_lr
+
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = running_lr
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser('Change Detection train')
+    parser.add_argument("--dataset", choices=("landsat", "second"),
+                        default=_selected_dataset.dataset)
+    parser.add_argument("--num-classes", type=int,
+                        default=training_config.model_num_classes)
+    parser.add_argument("--backbone", type=str, default="msam_96")
+    parser.add_argument("--neck", type=str, default="fpn+drop")
+    parser.add_argument("--head", type=str, default="fcn")
+    parser.add_argument("--loss", type=str, default="bce+dice")
+    parser.add_argument("--pretrain", type=str, default="")  
+    parser.add_argument("--resume", type=str, default="",
+                        help="Load model weights from a .pth checkpoint.")
+    parser.add_argument("--start-epoch", type=int, default=0,
+                        help="Epoch index to continue from after loading --resume.")
+    parser.add_argument("--cuda", type=int, default=0,
+                        help="Logical CUDA index after CUDA_VISIBLE_DEVICES remapping.")
+    parser.add_argument("--batch-size", type=int, default=2,
+                        help="Physical micro-batch size; 2 fits a 24 GB RTX 3090.")
+    parser.add_argument("--effective-batch-size", type=int, default=8,
+                        help="Target batch size after gradient accumulation.")
+    parser.add_argument("--val-batch-size", type=int, default=args['val_batch_size'])
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--input-size", type=int, default=512)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--learning-rate", type=float, default=0.00035)
+    parser.add_argument("--grad-clip", type=float, default=1.0,
+                        help="Maximum gradient norm; set <= 0 to disable clipping.")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--amp", dest="amp", action="store_true", default=True,
+                        help="Use CUDA automatic mixed precision to reduce memory usage.")
+    parser.add_argument("--no-amp", dest="amp", action="store_false",
+                        help="Disable CUDA automatic mixed precision.")
+    parser.add_argument("--gradient-checkpointing", dest="gradient_checkpointing",
+                        action="store_true", default=True,
+                        help="Recompute backbone activations during backward to save memory.")
+    parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing",
+                        action="store_false", help="Disable backbone gradient checkpointing.")
+    parser.add_argument("--debug-nonfinite", action="store_true",
+                        help="Stop at the first module that produces NaN/Inf and print tensor stats.")
+    parser.add_argument("--dual-label", type=bool, default=False)
+    parser.add_argument("--finetune", type=bool, default=True)
+    parser.add_argument("--use-ema-teacher", dest="use_ema_teacher", action="store_true", default=False,
+                        help="Enable EMA teacher model for pseudo-label generation.")
+    parser.add_argument("--no-use-ema-teacher", dest="use_ema_teacher", action="store_false",
+                        help="Disable EMA teacher updates.")
+    parser.add_argument("--use-semantic-pseudo", dest="use_semantic_pseudo", action="store_true", default=False,
+                        help="Enable entropy-filtered semantic pseudo labels on unchanged regions.")
+    parser.add_argument("--no-use-semantic-pseudo", dest="use_semantic_pseudo", action="store_false",
+                        help="Disable semantic pseudo labels for the supervised baseline.")
+    parser.add_argument("--ema-decay", type=float, default=args['ema_decay'],
+                        help="EMA decay used to update the teacher model from the student.")
+    parser.add_argument("--pseudo-start-epoch", type=int, default=30,
+                        help="Epoch to start semantic pseudo-label supervision.")
+    parser.add_argument("--pseudo-alpha-start", type=float, default=0.5,
+                        help="Initial per-class pseudo-label keep ratio.")
+    parser.add_argument("--pseudo-alpha-end", type=float, default=0.8,
+                        help="Final per-class pseudo-label keep ratio.")
+    parser.add_argument("--pseudo-min-ratio", type=float, default=0.05,
+                        help="Minimum class-wise keep ratio before precision scaling.")
+    parser.add_argument("--pseudo-ignore-index", type=int, default=255,
+                        help="Ignore index used for unreliable pseudo-label pixels.")
+    parser.add_argument("--pseudo-change-thr", type=float, default=0.3,
+                        help="Teacher change probability threshold for unchanged pseudo-label candidates.")
+    parser.add_argument("--lambda-sem-u", type=float, default=args['lambda_sem_u'],
+                        help="Weight of semantic pseudo-label loss.")
+    parser.add_argument("--lambda-sem-sup", type=float, default=args['lambda_sem_sup'],
+                        help="Weight of supervised semantic loss.")
+    parser.add_argument("--pseudo-rampup-epoch", type=int, default=5,
+                        help="Epochs used to ramp up semantic pseudo-label loss weight.")
+    parser.add_argument("--pseudo-precision-init", type=float, default=0.8,
+                        help="Initial teacher class precision used for class-wise keep ratios.")
+    parser.add_argument("--pseudo-precision-momentum", type=float, default=0.9,
+                        help="Momentum for EMA class precision updates.")
+
+    opt = parser.parse_args()
+
+    if opt.batch_size < 1 or opt.effective_batch_size < opt.batch_size:
+        parser.error("batch sizes must be positive and effective batch must be >= physical batch")
+    if opt.effective_batch_size % opt.batch_size != 0:
+        parser.error("--effective-batch-size must be divisible by --batch-size")
+    if opt.use_semantic_pseudo and not opt.use_ema_teacher:
+        parser.error("--use-semantic-pseudo requires --use-ema-teacher")
+    if opt.grad_clip <= 0:
+        opt.grad_clip = float("inf")
+    if opt.start_epoch < 0:
+        parser.error("--start-epoch must be >= 0")
+    if opt.start_epoch > 0 and not opt.resume:
+        parser.error("--start-epoch > 0 requires --resume")
+    if opt.start_epoch >= opt.epochs:
+        parser.error("--start-epoch must be smaller than --epochs")
+
+    main(opt)

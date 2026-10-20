@@ -1,0 +1,156 @@
+import math
+from dataclasses import dataclass
+
+import torch
+import torch.nn.functional as F
+
+
+@dataclass
+class PseudoSelection:
+    targets: torch.Tensor
+    reliable_mask: torch.Tensor
+    entropy: torch.Tensor
+    retained_per_class: torch.Tensor
+
+
+def build_semantic_regions(labels_a, labels_b):
+    changed = (labels_a > 0) | (labels_b > 0)
+    return changed, ~changed
+
+
+def supervised_semantic_loss(logits_a, logits_b, labels_a, labels_b):
+    losses = []
+    valid_a = labels_a > 0
+    valid_b = labels_b > 0
+
+    if valid_a.any():
+        logits_a_flat = logits_a.permute(0, 2, 3, 1)[valid_a]
+        losses.append(F.cross_entropy(logits_a_flat, labels_a[valid_a]))
+    if valid_b.any():
+        logits_b_flat = logits_b.permute(0, 2, 3, 1)[valid_b]
+        losses.append(F.cross_entropy(logits_b_flat, labels_b[valid_b]))
+
+    if not losses:
+        return (logits_a.sum() + logits_b.sum()) * 0.0
+    return sum(losses) / len(losses)
+
+
+@torch.no_grad()
+def select_class_balanced_pseudo(
+    logits,
+    candidate_mask,
+    keep_ratios,
+    ignore_index=255,
+):
+    probabilities = torch.softmax(logits.float(), dim=1)
+    predictions = probabilities.argmax(dim=1)
+    num_classes = logits.shape[1]
+    entropy = -(probabilities * probabilities.clamp_min(1e-10).log()).sum(dim=1)
+    if num_classes > 1:
+        entropy = entropy / math.log(num_classes)
+
+    keep_ratios = torch.as_tensor(
+        keep_ratios, device=logits.device, dtype=torch.float32
+    )
+    candidate_mask = candidate_mask.to(device=logits.device, dtype=torch.bool)
+    targets = torch.full_like(predictions, ignore_index)
+    reliable_mask = torch.zeros_like(candidate_mask)
+    retained_per_class = torch.zeros(
+        num_classes, device=logits.device, dtype=torch.long
+    )
+
+    flat_predictions = predictions.reshape(-1)
+    flat_candidates = candidate_mask.reshape(-1)
+    flat_entropy = entropy.reshape(-1)
+    flat_targets = targets.reshape(-1)
+    flat_reliable = reliable_mask.reshape(-1)
+
+    for cls in range(num_classes):
+        class_indices = torch.nonzero(
+            flat_candidates & (flat_predictions == cls), as_tuple=False
+        ).squeeze(1)
+        keep_count = int(
+            round(class_indices.numel() * float(keep_ratios[cls]))
+        )
+        keep_count = min(max(keep_count, 0), class_indices.numel())
+        if keep_count == 0:
+            continue
+
+        class_entropy = flat_entropy[class_indices]
+        ordered = class_indices[torch.argsort(class_entropy, stable=True)]
+        selected = ordered[:keep_count]
+        flat_targets[selected] = cls
+        flat_reliable[selected] = True
+        retained_per_class[cls] = keep_count
+
+    return PseudoSelection(
+        targets=targets,
+        reliable_mask=reliable_mask,
+        entropy=entropy,
+        retained_per_class=retained_per_class,
+    )
+
+
+def semantic_pseudo_loss(student_logits, pseudo_targets, ignore_index=255):
+    if not (pseudo_targets != ignore_index).any():
+        return student_logits.sum() * 0.0
+    return F.cross_entropy(
+        student_logits, pseudo_targets, ignore_index=ignore_index
+    )
+
+
+@torch.no_grad()
+def update_precision_ema(
+    previous, true_positive, predicted_positive, momentum
+):
+    observed = true_positive / predicted_positive.clamp_min(1.0)
+    has_evidence = predicted_positive > 0
+    updated = previous.clone()
+    updated[has_evidence] = (
+        momentum * previous[has_evidence]
+        + (1.0 - momentum) * observed[has_evidence]
+    )
+    return updated
+
+
+@torch.no_grad()
+def scheduled_keep_ratios(
+    epoch,
+    start_epoch,
+    total_epochs,
+    start_ratio,
+    end_ratio,
+    precision,
+    min_ratio,
+):
+    if epoch < start_epoch:
+        return torch.zeros_like(precision)
+
+    schedule_length = max(total_epochs - start_epoch, 1)
+    progress = min(max((epoch - start_epoch) / schedule_length, 0.0), 1.0)
+    base_ratio = start_ratio + (end_ratio - start_ratio) * progress
+    ratios = (precision * base_ratio).clamp(min=min_ratio, max=1.0)
+    if ratios.numel() > 0:
+        ratios[0] = 0.0
+    return ratios
+
+
+@torch.no_grad()
+def update_ema_teacher(student, teacher, decay, optimizer_step):
+    del optimizer_step
+    if decay != 0.999:
+        raise ValueError("teacher EMA decay must be exactly 0.999")
+
+    student_state = student.state_dict()
+    teacher_state = teacher.state_dict()
+    if student_state.keys() != teacher_state.keys():
+        raise ValueError("student and teacher state dictionaries must align")
+
+    for key, teacher_value in teacher_state.items():
+        student_value = student_state[key].to(device=teacher_value.device)
+        if teacher_value.is_floating_point():
+            teacher_value.mul_(decay).add_(
+                student_value.to(dtype=teacher_value.dtype), alpha=1.0 - decay
+            )
+        else:
+            teacher_value.copy_(student_value)

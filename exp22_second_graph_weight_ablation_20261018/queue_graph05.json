@@ -1,0 +1,10 @@
+{
+  "status": "queued",
+  "branch": "graph05",
+  "graph_pixel_pseudo_weight": 0.05,
+  "resume_checkpoint": "/home/homenew/yang/SCD/SCD-SAM/SCD/exp21_second_graph_pseudo_complement_alpha01_03_20261016/output/checkpoints/SECOND/SECOND_pseudo_graph_stage2_seed42_epoch054_Fscd0.5961.pth",
+  "resume_checkpoint_sha256": "580e2ee7155ddc09254431449c442e1b6f779bc6c719612755b87cbf66d60975",
+  "argument_vector_sha256": "88e03d855e4902ba1ef1292005759ae19eadea7326aab92d6df24509d1258982",
+  "launch_policy": "Launch on the first idle GPU after control or graph02 completes; never reuse an existing output directory.",
+  "launch_command_template": "/home/homenew/yang/anaconda3/envs/scd-sam-cuda12/bin/python exp22_second_graph_weight_ablation_20261018/launch_ablation.py --branch graph05 --weight 0.05 --gpu <IDLE_GPU>"
+}

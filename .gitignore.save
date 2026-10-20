@@ -1,0 +1,17 @@
+ __pycache__/
+  *.pyc
+  *.pyo
+  .idea/
+  .vscode/
+  .codex/
+  cache/
+  checkpoints/
+  logs/
+  results/
+  visualizations/
+  weights/
+  *.pth
+  *.pt
+  *.ckpt
+  *.log
+  EOF
