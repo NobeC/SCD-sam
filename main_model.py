@@ -12,39 +12,43 @@ from models.Decoder.FPN import FPNNeck
 from models.Decoder.AFPN_CARAFE import AFPN
 from models.head.CSD import *
 from models.head.FCN import *
+from models.graph.mask_supplement import SamMaskSupplement
 
 class ChangeDetection(nn.Module):
     def __init__(self, opt):
         super().__init__()
-        self.inplanes = int(re.sub(r"\D", "", opt.backbone.split("_")[-1]))  
+        self.inplanes = int(re.sub(r"\D", "", opt.backbone.split("_")[-1]))
         self.num_classes = getattr(opt, "num_classes", 5)
         self._create_backbone(opt.backbone, getattr(opt, "gradient_checkpointing", False))
         self._create_neck(opt.neck)
         self._create_heads(opt.head)
         if opt.pretrain.endswith(".pt"):
-            self._init_weight(opt.pretrain)   
+            self._init_weight(opt.pretrain)
         self.check_channels = ChannelChecker(self.backbone, self.inplanes, opt.input_size)
         self.fusion4 = Transformer(self.inplanes*8, self.inplanes*8, 16, 16)
         self.conv4 = Conv1Relu(self.inplanes*16, self.inplanes*8)
+        p = self.inplanes
+        self.mask_supplement = SamMaskSupplement([p, p * 2, p * 4])
 
 
     def forward(
         self, xa, xb, return_graph_features=False,
         detach_graph_features=True,
+        masks_list=None,
     ):
         _, _, h_input, w_input = xa.shape
         assert xa.shape == xb.shape, "The two images are not the same size, please check it."
 
-        fa1, fa2, fa3, _,fa4 = self.backbone(xa)  
+        fa1, fa2, fa3, _, fa4 = self.backbone(xa)
         graph_fa3, graph_fa4 = fa3, fa4
         if detach_graph_features:
             graph_fa3, graph_fa4 = graph_fa3.detach(), graph_fa4.detach()
-        fa1, fa2, fa3,fa4 = self.check_channels(fa1, fa2, fa3, fa4)
-        fb1, fb2, fb3, _,fb4 = self.backbone(xb)
+        fa1, fa2, fa3, fa4 = self.check_channels(fa1, fa2, fa3, fa4)
+        fb1, fb2, fb3, _, fb4 = self.backbone(xb)
         graph_fb3, graph_fb4 = fb3, fb4
         if detach_graph_features:
             graph_fb3, graph_fb4 = graph_fb3.detach(), graph_fb4.detach()
-        fb1, fb2, fb3,fb4 = self.check_channels(fb1, fb2, fb3, fb4)
+        fb1, fb2, fb3, fb4 = self.check_channels(fb1, fb2, fb3, fb4)
 
         fa12, fa22, fa32, fa42 = self.backbone2(xa)
         fb12, fb22, fb32, fb42 = self.backbone2(xb)
@@ -54,11 +58,21 @@ class ChangeDetection(nn.Module):
         fa4 = self.conv4(torch.cat([inentity_a4, self.fusion4(fa4, fa42)], 1))
         fb4 = self.conv4(torch.cat([inentity_b4, self.fusion4(fb4, fb42)], 1))
 
-        ms_feats = fa1, fa2, fa3, fa4, fb1, fb2, fb3, fb4  
+        ms_feats = fa1, fa2, fa3, fa4, fb1, fb2, fb3, fb4
 
         change = self.neck(ms_feats)
-        change_s1 = self.senmantic_neck(ms_feats)
-        change_s2 = self.senmantic_neck(ms_feats)
+
+        # SAM mask supplement: only enriches the semantic neck path.
+        # Change detection (FPN) uses unmodified ms_feats.
+        if masks_list is not None:
+            (fa1_s, fa2_s, fa3_s), (fb1_s, fb2_s, fb3_s) = self.mask_supplement(
+                [fa1, fa2, fa3], [fb1, fb2, fb3], masks_list)
+            ms_feats_sem = fa1_s, fa2_s, fa3_s, fa4, fb1_s, fb2_s, fb3_s, fb4
+        else:
+            ms_feats_sem = ms_feats
+
+        change_s1 = self.senmantic_neck(ms_feats_sem)
+        change_s2 = self.senmantic_neck(ms_feats_sem)
 
         out1, out2, out = self.head_forward(change, change_s1, change_s2, out_size=(h_input, w_input))
 

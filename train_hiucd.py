@@ -248,12 +248,16 @@ def main():
                     if vertical:
                         masks = masks.flip(1)
                     graph_data.append({"shared_masks": masks[:graph.max_regions].contiguous()})
+            masks_list = (
+                [item["shared_masks"] for item in graph_data]
+                if graph_data is not None else None
+            )
             with torch.autocast("cuda", enabled=not opt.no_amp):
                 if graph:
                     outputs, features = model(batch["A"], batch["B"], return_graph_features=True,
-                                              detach_graph_features=True)
+                                              detach_graph_features=True, masks_list=masks_list)
                 else:
-                    outputs = model(batch["A"], batch["B"])
+                    outputs = model(batch["A"], batch["B"], masks_list=masks_list)
                     features = None
                 loss, parts = supervised_loss(outputs, batch)
             if graph:
