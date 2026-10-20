@@ -576,13 +576,18 @@ def train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loade
             imgs_A, imgs_B = scale.scale_input((imgs_A, imgs_B))
 
             graph_backbone_features = None
+            masks_list = (
+                [item["shared_masks"] for item in graph_data]
+                if graph_data is not None else None
+            )
             with torch.cuda.amp.autocast(enabled=opt.amp):
                 if graph_runtime is None:
                     outs = net(imgs_A, imgs_B)
                 else:
                     outs, graph_backbone_features = net(
                         imgs_A, imgs_B, return_graph_features=True,
-                        detach_graph_features=not stage2_active)
+                        detach_graph_features=not stage2_active,
+                        masks_list=masks_list)
                 outs = scale.scale_output(outs)
                 outputs_A, outputs_B, out_change = outs
 
