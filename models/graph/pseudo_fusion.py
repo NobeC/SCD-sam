@@ -261,3 +261,127 @@ def graph_pixel_pseudo_loss(
         F.cross_entropy(logits_a.float(), supervised_target, ignore_index=int(ignore_index))
         + F.cross_entropy(logits_b.float(), supervised_target, ignore_index=int(ignore_index))
     )
+
+
+@dataclass
+class ComplementResult:
+    pseudo_a: torch.Tensor
+    pseudo_b: torch.Tensor
+    graph_mask_a: torch.Tensor
+    graph_mask_b: torch.Tensor
+    teacher_mask_a: torch.Tensor
+    teacher_mask_b: torch.Tensor
+    graph_pixel_count_a: int
+    graph_pixel_count_b: int
+    teacher_pixel_count_a: int
+    teacher_pixel_count_b: int
+
+
+@torch.no_grad()
+def teacher_graph_complement(
+    teacher_probs_a,
+    teacher_probs_b,
+    teacher_change_logits,
+    labels_a,
+    labels_b,
+    graph_pred_a,
+    graph_conf_a,
+    graph_valid_a,
+    graph_pred_b,
+    graph_conf_b,
+    graph_valid_b,
+    graph_conf_threshold=0.85,
+    change_threshold=0.3,
+    num_classes=7,
+    ignore_index=255,
+):
+    """Complement pseudo labels: graph fills high-confidence regions,
+    Teacher (entropy-filtered) fills the rest of the unchanged candidate area.
+
+    Graph and Teacher cover disjoint pixel sets — no conflict.
+
+    Args:
+        teacher_probs_a/b: [B, C, H, W] softmax probabilities from EMA Teacher
+        teacher_change_logits: [B, 1, H, W] change logits from EMA Teacher
+        labels_a/b: [B, H, W] GT labels (0 = unchanged/unlabeled)
+        graph_pred_a/b: [B, H, W] long, per-pixel graph predictions
+        graph_conf_a/b: [B, H, W] float, per-pixel graph confidence
+        graph_valid_a/b: [B, H, W] bool, whether graph prediction exists
+        graph_conf_threshold: minimum graph confidence to accept as pseudo label
+        change_threshold: teacher change prob below which a pixel is a candidate
+        num_classes: number of semantic classes
+        ignore_index: fill value for non-supervised pixels
+
+    Returns:
+        ComplementResult with pseudo_a/b ([B, H, W] long) and coverage masks
+    """
+    device = teacher_probs_a.device
+    B, C, H, W = teacher_probs_a.shape
+    spatial = (B, H, W)
+
+    # Unchanged candidate region (same as EMA Teacher pseudo label logic)
+    gt_unchanged = (labels_a == 0) & (labels_b == 0)
+    teacher_change_prob = torch.sigmoid(teacher_change_logits.float()).squeeze(1)
+    teacher_unchanged = teacher_change_prob < change_threshold
+    candidate = gt_unchanged & teacher_unchanged  # [B, H, W]
+
+    # Graph region: high-confidence predictions within candidate area
+    graph_pred_a = graph_pred_a.to(device=device, dtype=torch.long)
+    graph_pred_b = graph_pred_b.to(device=device, dtype=torch.long)
+    graph_conf_a = graph_conf_a.to(device=device, dtype=torch.float32)
+    graph_conf_b = graph_conf_b.to(device=device, dtype=torch.float32)
+    graph_valid_a = graph_valid_a.to(device=device, dtype=torch.bool)
+    graph_valid_b = graph_valid_b.to(device=device, dtype=torch.bool)
+
+    graph_mask_a = graph_valid_a & (graph_conf_a >= graph_conf_threshold) & candidate
+    graph_mask_b = graph_valid_b & (graph_conf_b >= graph_conf_threshold) & candidate
+
+    # Sanity: graph predictions must be valid semantic classes
+    graph_mask_a = graph_mask_a & (graph_pred_a > 0) & (graph_pred_a < num_classes)
+    graph_mask_b = graph_mask_b & (graph_pred_b > 0) & (graph_pred_b < num_classes)
+
+    # Teacher region: remainder of candidate, entropy-filtered
+    teacher_candidate_a = candidate & ~graph_mask_a
+    teacher_candidate_b = candidate & ~graph_mask_b
+
+    # Entropy filtering for Teacher (keep lowest-entropy pixels per class)
+    def _entropy_filter(probs, candidate_mask):
+        entropy = -(probs * (probs + 1e-10).log()).sum(dim=1)  # [B, H, W]
+        pred = probs.argmax(dim=1)                             # [B, H, W]
+        pseudo = torch.full(spatial, ignore_index, device=device, dtype=torch.long)
+        for cls in range(1, num_classes):
+            cls_mask = (pred == cls) & candidate_mask
+            if not cls_mask.any():
+                continue
+            cls_entropy = entropy[cls_mask]
+            k = max(1, int(cls_mask.sum().item() * 0.7))
+            if k >= cls_mask.sum().item():
+                thr = cls_entropy.max()
+            else:
+                thr = torch.topk(cls_entropy, k=k, largest=False).values.max()
+            keep = cls_mask & (entropy <= thr)
+            pseudo[keep] = cls
+        return pseudo
+
+    teacher_pseudo_a = _entropy_filter(teacher_probs_a, teacher_candidate_a)
+    teacher_pseudo_b = _entropy_filter(teacher_probs_b, teacher_candidate_b)
+
+    # Merge: graph fills its region, Teacher fills the rest
+    pseudo_a = teacher_pseudo_a.clone()
+    pseudo_a[graph_mask_a] = graph_pred_a[graph_mask_a]
+
+    pseudo_b = teacher_pseudo_b.clone()
+    pseudo_b[graph_mask_b] = graph_pred_b[graph_mask_b]
+
+    return ComplementResult(
+        pseudo_a=pseudo_a.detach(),
+        pseudo_b=pseudo_b.detach(),
+        graph_mask_a=graph_mask_a.detach(),
+        graph_mask_b=graph_mask_b.detach(),
+        teacher_mask_a=(teacher_pseudo_a != ignore_index).detach(),
+        teacher_mask_b=(teacher_pseudo_b != ignore_index).detach(),
+        graph_pixel_count_a=int(graph_mask_a.sum()),
+        graph_pixel_count_b=int(graph_mask_b.sum()),
+        teacher_pixel_count_a=int((teacher_pseudo_a != ignore_index).sum()),
+        teacher_pixel_count_b=int((teacher_pseudo_b != ignore_index).sum()),
+    )

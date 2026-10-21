@@ -28,7 +28,8 @@ from utils.training_performance import (
 from utils.graph_stage1_training import (
     add_graph_stage1_arguments, build_graph_stage1_runtime, build_sam_cache_config)
 from models.graph.pseudo_fusion import (
-    graph_pixel_pseudo_loss, reproject_stage2_batch, teacher_graph_veto)
+    graph_pixel_pseudo_loss, reproject_stage2_batch,
+    teacher_graph_veto, teacher_graph_complement, ComplementResult)
 from datasets.RS_ST_graph import SamGraphDataset, collate_sam_graph_batch
 
 
@@ -253,14 +254,15 @@ def get_lambda_sem_u(opt, curr_epoch):
 
 
 def get_graph_pixel_pseudo_weight(opt, curr_epoch):
-    if (not opt.use_sam_graph_stage2
-            or curr_epoch < opt.graph_stage2_start_epoch):
+    # Unified flow: GAT runs from epoch 0, weight ramps up from pseudo_start_epoch.
+    # --graph-stage2-start-epoch is no longer used (kept for backward compat).
+    if not opt.use_sam_graph_stage1:
+        return 0.0
+    start = max(int(opt.pseudo_start_epoch), 0)
+    if curr_epoch < start:
         return 0.0
     ramp_epochs = max(int(opt.graph_pseudo_ramp_epochs), 1)
-    progress = min(
-        1.0,
-        float(curr_epoch - opt.graph_stage2_start_epoch) / float(ramp_epochs),
-    )
+    progress = min(1.0, float(curr_epoch - start) / float(ramp_epochs))
     return float(opt.graph_pixel_pseudo_weight) * progress
 
 
@@ -554,10 +556,9 @@ def train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loade
         for i, data in enumerate(train_loader):
             throughput_timer.start_compute()
             running_iter = curr_iter + i + 1
-            stage2_active = bool(
-                graph_runtime is not None
-                and opt.use_sam_graph_stage2
-                and curr_epoch >= opt.graph_stage2_start_epoch)
+            # Unified flow: Stage2 GAT always active when graph is loaded.
+            # Weight ramps up from pseudo_start_epoch via get_graph_pixel_pseudo_weight.
+            stage2_active = graph_runtime is not None
             if graph_runtime is None:
                 imgs_A, imgs_B, labels_A, labels_B = data
                 graph_data = None
@@ -719,13 +720,13 @@ def train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loade
                     + opt.lambda_graph_gt * loss_stage2_graph_gt
                     + opt.graph_temp_weight * loss_graph_temp
                 )
-                if stage2_active and teacher_ready:
+                if stage2_active and teacher_ready and graph_pseudo_weight > 0:
                     graph_pixels = reproject_stage2_batch(
                         graph_result.stage2_result,
                         graph_result.audits,
                         graph_result.masks,
                     )
-                    graph_veto = teacher_graph_veto(
+                    complement = teacher_graph_complement(
                         teacher_probs_a=torch.softmax(teacher_outputs_A.float(), dim=1),
                         teacher_probs_b=torch.softmax(teacher_outputs_B.float(), dim=1),
                         teacher_change_logits=teacher_change,
@@ -737,9 +738,7 @@ def train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loade
                         graph_pred_b=graph_pixels.pred_b,
                         graph_conf_b=graph_pixels.conf_b,
                         graph_valid_b=graph_pixels.valid_b,
-                        teacher_threshold=opt.graph_teacher_threshold,
-                        teacher_fallback_threshold=opt.teacher_fallback_threshold,
-                        graph_confidence_threshold=opt.graph_confidence_threshold,
+                        graph_conf_threshold=opt.graph_confidence_threshold,
                         change_threshold=opt.pseudo_change_thr,
                         num_classes=RS.num_classes,
                         ignore_index=opt.pseudo_ignore_index,
@@ -747,11 +746,11 @@ def train(train_loader, net, net_psd, criterion, optimizer, scheduler, val_loade
                     with torch.cuda.amp.autocast(enabled=opt.amp):
                         loss_graph_pixel_pseudo = graph_pixel_pseudo_loss(
                             outputs_A, outputs_B,
-                            graph_veto.target, graph_veto.valid,
+                            complement.pseudo_a, complement.pseudo_a != opt.pseudo_ignore_index,
                             ignore_index=opt.pseudo_ignore_index)
                     loss = loss + graph_pseudo_weight * loss_graph_pixel_pseudo
                     graph_runtime.stage2_counters["accepted_pixels"] += (
-                        graph_veto.accepted_count)
+                        complement.graph_pixel_count_a + complement.teacher_pixel_count_a)
 
             loss_components = {
                 'loss_sem_sup': loss_sem_sup,

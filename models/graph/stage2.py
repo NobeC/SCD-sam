@@ -126,6 +126,16 @@ class SamGraphStage2(nn.Module):
             probabilities = torch.softmax(logits.float(), dim=1)
             confidence, predictions = probabilities.max(dim=1)
             valid = torch.isfinite(confidence) & initialized[predictions]
+
+            # Prototype consistency gate: compare post-GAT prediction against
+            # pre-GAT prototype lookup. Nodes where propagation flipped the
+            # prediction away from the nearest prototype are unreliable.
+            with torch.no_grad():
+                orig_projected = stage1.prototype_projection(batch.nodes.float())
+                orig_logits = stage1.prototypes.logits(orig_projected)
+                orig_pred = orig_logits.argmax(dim=1)
+            consistent = (predictions == orig_pred) | ~initialized[orig_pred.clamp(0, self.num_classes - 1)]
+            valid = valid & consistent
         else:
             probabilities = propagated.new_zeros((node_count, self.num_classes))
             predictions = torch.zeros(node_count, device=device, dtype=torch.long)

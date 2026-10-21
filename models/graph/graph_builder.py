@@ -197,15 +197,8 @@ def build_stage2_edges(node_batch, edge_net, local_topk=8, edge_threshold=0.5):
                     if weight >= float(edge_threshold):
                         add(left_index, right_index, REL_PROPAGATION, weight)
                         add(right_index, left_index, REL_PROPAGATION, weight)
-            for u_position in u_positions:
-                candidates = [other for other in u_positions if other != u_position]
-                for other in _rank_by_center(
-                        node_batch.geometry, u_position, candidates, int(local_topk)):
-                    distance = torch.linalg.vector_norm(
-                        node_batch.geometry[u_position, :2].float()
-                        - node_batch.geometry[other, :2].float())
-                    prior = 1.0 / (1.0 + float(distance.detach()))
-                    add(other, u_position, REL_SPATIAL, prior)
+            # U→U spatial edges removed: limit propagation to 1-hop GT→U only,
+            # preventing cascade error accumulation across unlabeled nodes.
 
     for left, right in node_batch.temporal_pairs():
         add(left, right, REL_TEMPORAL, 1.0)
