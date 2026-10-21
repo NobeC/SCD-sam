@@ -25,8 +25,13 @@ superpixel_cache/
 # 嵌套仓库（不纳入版本管理）
 MobileSAM/
 
-# 数据集
-datasets/
+# 数据集原始文件（Python 模块不在此列）
+datasets/*.png
+datasets/*.jpg
+datasets/*.tif
+datasets/*.tiff
+datasets/*.npz
+datasets/*.npy
 
 # 实验输出目录（保留 exp*/ 里的配置和脚本，只忽略其中的大文件）
 evaluation_*/
