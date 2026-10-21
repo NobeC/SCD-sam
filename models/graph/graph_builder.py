@@ -147,6 +147,29 @@ def _rank_by_cosine(nodes, query_index, candidate_indices, limit):
     return [candidate for _, candidate in sorted(ranked)[:limit]]
 
 
+@torch.no_grad()
+def _topk_gt_u_pairs(nodes, gt_indices, u_indices, k):
+    """Vectorised replacement for the GT→U cosine-ranking inner loop.
+
+    Returns a list of (gt_global_idx, u_global_idx) pairs — same contract as
+    the original nested _rank_by_cosine loop but done with a single matmul.
+    """
+    if not gt_indices or not u_indices:
+        return []
+    k = min(int(k), len(u_indices))
+    device = nodes.device
+    gt_t = torch.as_tensor(gt_indices, device=device, dtype=torch.long)
+    u_t = torch.as_tensor(u_indices, device=device, dtype=torch.long)
+    gt_vecs = F.normalize(nodes[gt_t].float(), dim=1, eps=1e-6)  # [G, D]
+    u_vecs = F.normalize(nodes[u_t].float(), dim=1, eps=1e-6)    # [U, D]
+    sim = gt_vecs @ u_vecs.T                                      # [G, U]
+    topk_local = torch.topk(sim, k=k, dim=1, largest=True).indices  # [G, k]
+    topk_global = u_t[topk_local]                                  # [G, k]
+    gt_expanded = gt_t.unsqueeze(1).expand(-1, k)                  # [G, k]
+    return list(zip(gt_expanded.flatten().tolist(),
+                    topk_global.flatten().tolist()))
+
+
 def _rank_by_center(geometry, query_index, candidate_indices, limit):
     ranked = []
     center = geometry[query_index, :2].float()
@@ -180,14 +203,13 @@ def build_stage2_edges(node_batch, edge_net, local_topk=8, edge_threshold=0.5):
             positions = node_batch.positions(sample_index, time_index).tolist()
             gt_positions = [p for p in positions if int(node_batch.states[p]) == GT]
             u_positions = [p for p in positions if int(node_batch.states[p]) == UNLABELED]
-            candidate_pairs = []
-            for gt_position in gt_positions:
-                for u_position in _rank_by_cosine(
-                        node_batch.nodes, gt_position, u_positions, int(local_topk)):
-                    candidate_pairs.append((gt_position, u_position))
+            candidate_pairs = _topk_gt_u_pairs(
+                node_batch.nodes, gt_positions, u_positions, int(local_topk))
             if candidate_pairs:
-                left = torch.stack([node_batch.nodes[left] for left, _ in candidate_pairs])
-                right = torch.stack([node_batch.nodes[right] for _, right in candidate_pairs])
+                left_idx = torch.tensor([l for l, _ in candidate_pairs], device=device, dtype=torch.long)
+                right_idx = torch.tensor([r for _, r in candidate_pairs], device=device, dtype=torch.long)
+                left = node_batch.nodes[left_idx]
+                right = node_batch.nodes[right_idx]
                 relation_ids = torch.zeros(len(candidate_pairs), device=device, dtype=torch.long)
                 with torch.no_grad(), torch.autocast(device_type=device.type, enabled=False):
                     reliability = torch.sigmoid(
