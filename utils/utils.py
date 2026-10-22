@@ -205,7 +205,7 @@ def SCDD_eval_all(preds, labels, num_class):
     for pred, label in zip(preds, labels):
         infer_array = np.array(pred)
         unique_set = set(np.unique(infer_array))
-        assert unique_set.issubset(set([0, 1, 2, 3, 4, 5, 6])), "unrecognized label number"
+        assert unique_set.issubset(set(range(num_class))), "unrecognized label number"
         label_array = np.array(label)
         assert infer_array.shape == label_array.shape, "The size of prediction and target must be the same"
         hist += get_hist(infer_array, label_array, num_class)
@@ -237,7 +237,7 @@ def SCDD_eval_all(preds, labels, num_class):
 def SCDD_eval(pred, label, num_class):
     infer_array = np.array(pred)
     unique_set = set(np.unique(infer_array))
-    assert unique_set.issubset(set([0, 1, 2, 3, 4, 5, 6])), "unrecognized label number"
+    assert unique_set.issubset(set(range(num_class))), "unrecognized label number"
     label_array = np.array(label)
     assert infer_array.shape == label_array.shape, "The size of prediction and target must be the same"
     hist = get_hist(infer_array, label_array, num_class)

@@ -20,7 +20,17 @@ from utils.loss import CrossEntropyLoss2d
 from utils.utils import accuracy, SCDD_eval_all, AverageMeter
 from utils.common import ScaleInOutput
 from utils.eval_checkpoint import resolve_checkpoint_path
-from datasets import RS_ST as RS
+
+_eval_dataset_parser = argparse.ArgumentParser(add_help=False)
+_eval_dataset_parser.add_argument("--dataset", choices=("landsat", "second", "hiucd"),
+                                  default=os.environ.get("SCD_DATASET", "landsat"))
+_eval_selected, _ = _eval_dataset_parser.parse_known_args()
+if _eval_selected.dataset == "hiucd":
+    import datasets.RS_HiUCD as RS
+else:
+    os.environ["SCD_DATASET"] = _eval_selected.dataset
+    from datasets import RS_ST as RS
+
 from main_model import ChangeDetection
 
 NET_NAME = 'SAM'
@@ -117,6 +127,8 @@ def main(opt):
     net = ChangeDetection(opt).cuda()
     load_checkpoint_safely(net, opt.pth_path)
     net.eval()
+    if opt.dataset == "hiucd":
+        RS.configure(opt.root, opt.split_json)
     val_set = RS.Data('val')
     val_loader = DataLoader(val_set, batch_size=args['val_batch_size'], shuffle=False)
     criterion = CrossEntropyLoss2d(ignore_index=0).cuda()
@@ -206,6 +218,12 @@ def adjust_lr(optimizer, curr_iter, all_iter, init_lr=args['lr']):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Change Detection train')
+    parser.add_argument("--dataset", choices=("landsat", "second", "hiucd"),
+                        default=_eval_selected.dataset)
+    parser.add_argument("--root", type=str, default="",
+                        help="Image root directory (required for --dataset hiucd).")
+    parser.add_argument("--split-json", type=str, default="",
+                        help="Path to split.json (required for --dataset hiucd).")
     parser.add_argument("--backbone", type=str, default="msam_96")
     parser.add_argument("--neck", type=str, default="fpn+drop")
     parser.add_argument("--head", type=str, default="fcn")
@@ -231,4 +249,6 @@ if __name__ == '__main__':
 
     opt = parser.parse_args()
 
+    if opt.dataset == "hiucd" and (not opt.root or not opt.split_json):
+        parser.error("--dataset hiucd requires both --root and --split-json")
     main(opt)
