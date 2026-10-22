@@ -35,13 +35,16 @@ from datasets.RS_ST_graph import SamGraphDataset, collate_sam_graph_batch
 
 # Data and model choose
 _dataset_parser = argparse.ArgumentParser(add_help=False)
-_dataset_parser.add_argument("--dataset", choices=("landsat", "second"),
+_dataset_parser.add_argument("--dataset", choices=("landsat", "second", "hiucd"),
                              default=os.environ.get("SCD_DATASET", "landsat"))
 _selected_dataset, _ = _dataset_parser.parse_known_args()
-os.environ["SCD_DATASET"] = _selected_dataset.dataset
 ###############################################
 from configs.datasets import resolve_training_config
-from datasets import RS_ST as RS
+if _selected_dataset.dataset == "hiucd":
+    import datasets.RS_HiUCD as RS
+else:
+    os.environ["SCD_DATASET"] = _selected_dataset.dataset
+    from datasets import RS_ST as RS
 from main_model import ChangeDetection
 
 NET_NAME = 'SAMNet'
@@ -414,6 +417,8 @@ def main(opt):
         freeze_model(net_psd)
 
     graph_runtime = None
+    if opt.dataset == "hiucd":
+        RS.configure(opt.root, opt.split_json)
     if opt.use_sam_graph_stage1:
         base_train_set = RS.Data('train', random_flip=False)
         train_set = SamGraphDataset(
@@ -1164,8 +1169,12 @@ def adjust_lr(optimizer, curr_iter, all_iter, init_lr=args['lr']):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Change Detection train')
-    parser.add_argument("--dataset", choices=("landsat", "second"),
+    parser.add_argument("--dataset", choices=("landsat", "second", "hiucd"),
                         default=_selected_dataset.dataset)
+    parser.add_argument("--root", type=str, default="",
+                        help="Image root directory (required for --dataset hiucd).")
+    parser.add_argument("--split-json", type=str, default="",
+                        help="Path to split.json (required for --dataset hiucd).")
     parser.add_argument("--num-classes", type=int,
                         default=training_config.model_num_classes)
     parser.add_argument("--backbone", type=str, default="msam_96")
@@ -1240,6 +1249,8 @@ if __name__ == '__main__':
 
     opt = parser.parse_args()
 
+    if opt.dataset == "hiucd" and (not opt.root or not opt.split_json):
+        parser.error("--dataset hiucd requires both --root and --split-json")
     if opt.batch_size < 1 or opt.effective_batch_size < opt.batch_size:
         parser.error("batch sizes must be positive and effective batch must be >= physical batch")
     if opt.effective_batch_size % opt.batch_size != 0:

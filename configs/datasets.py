@@ -50,6 +50,35 @@ _CONFIGS = {
             (255, 0, 0),
         ),
     ),
+    "hiucd": DatasetConfig(
+        name="HiUCDMini",
+        root="",  # configured at runtime via --root
+        num_classes=10,
+        classes=(
+            "background",
+            "building",
+            "farmland",
+            "forest",
+            "meadow",
+            "water",
+            "road",
+            "industrial",
+            "residential",
+            "other",
+        ),
+        colormap=(
+            (255, 255, 255),
+            (200,   0,   0),
+            (  0, 180,   0),
+            (  0, 100,   0),
+            (144, 238, 144),
+            (  0, 120, 255),
+            (160, 160, 160),
+            ( 80,  80,  80),
+            (255, 180, 180),
+            (255, 220,   0),
+        ),
+    ),
 }
 
 
@@ -88,7 +117,7 @@ class TrainingConfig:
 
 def resolve_training_config(argv, working_path, model_num_classes, net_name="SAMNet"):
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--dataset", choices=("landsat", "second"),
+    parser.add_argument("--dataset", choices=("landsat", "second", "hiucd"),
                         default="landsat")
     parser.add_argument("--num-classes", type=int, default=model_num_classes)
     selected, _ = parser.parse_known_args(argv)
